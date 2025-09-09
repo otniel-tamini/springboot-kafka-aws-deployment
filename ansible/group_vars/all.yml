@@ -4,7 +4,7 @@
 
 # Configuration du projet
 project_name: springboot-microservices
-environment: production
+deployment_environment: production
 deployment_version: "{{ ansible_date_time.epoch }}"
 
 # Configuration AWS
@@ -49,7 +49,7 @@ common_labels:
   app.kubernetes.io/managed-by: ansible
   app.kubernetes.io/part-of: "{{ project_name }}"
   app.kubernetes.io/version: "{{ image_tag }}"
-  environment: "{{ environment }}"
+  environment: "{{ deployment_environment }}"
 
 # Annotations communes
 common_annotations:

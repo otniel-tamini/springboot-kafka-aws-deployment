@@ -28,7 +28,7 @@
         msg: |
           🚀 DÉPLOIEMENT MICROSERVICES SPRING BOOT KAFKA
           ================================================
-          🌍 Environnement: {{ environment }}
+          🌍 Environnement: {{ deployment_environment }}
           🏗️  Namespace: {{ k8s_namespace }}
           📊 Services à déployer: {{ groups['microservices'] | length }}
           🔧 Version: {{ common_image_tag }}

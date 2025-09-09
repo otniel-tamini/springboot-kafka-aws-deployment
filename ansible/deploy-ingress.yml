@@ -23,7 +23,7 @@
               kubernetes.io/ingress.class: alb
               alb.ingress.kubernetes.io/scheme: internet-facing
               alb.ingress.kubernetes.io/target-type: ip
-              alb.ingress.kubernetes.io/load-balancer-name: "{{ project_name }}-{{ environment }}-alb"
+              alb.ingress.kubernetes.io/load-balancer-name: "{{ project_name }}-{{ deployment_environment }}-alb"
               
               # Configuration ALB
               alb.ingress.kubernetes.io/load-balancer-attributes: |

@@ -4,8 +4,8 @@
 
 # Configuration ALB
 expose_api_gateway: true
-api_gateway_domain: "api.{{ project_name }}.{{ environment }}.local"
-alb_access_logs_bucket: "{{ project_name }}-{{ environment }}-alb-logs"
+api_gateway_domain: "api.{{ project_name }}.{{ deployment_environment }}.local"
+alb_access_logs_bucket: "{{ project_name }}-{{ deployment_environment }}-alb-logs"
 
 # Configuration SSL (optionnel)
 ssl_certificate_arn: ""  # ARN du certificat SSL dans ACM

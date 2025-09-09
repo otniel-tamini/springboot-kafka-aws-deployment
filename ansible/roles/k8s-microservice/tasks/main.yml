@@ -17,7 +17,7 @@
         labels:
           name: "{{ k8s_namespace }}"
           managed-by: ansible
-          environment: "{{ environment }}"
+          environment: "{{ deployment_environment }}"
   tags: [namespace]
 
 - name: "🔐 Créer le ConfigMap pour {{ service_name }}"

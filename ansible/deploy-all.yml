@@ -19,7 +19,7 @@
           =====================================================
           
           📅 Heure de début: {{ deployment_start_time }}
-          🌍 Environnement: {{ environment }}
+          🌍 Environnement: {{ deployment_environment }}
           🏗️  Namespace Microservices: {{ k8s_namespace }}
           🏗️  Namespace Infrastructure: infrastructure
           

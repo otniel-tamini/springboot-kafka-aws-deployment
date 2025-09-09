@@ -17,7 +17,7 @@ common_labels:
   app.kubernetes.io/managed-by: "ansible"
   app.kubernetes.io/part-of: "springboot-kafka-microservices"
   app.kubernetes.io/version: "{{ image_tag }}"
-  environment: "{{ environment }}"
+  environment: "{{ deployment_environment }}"
 
 common_annotations:
   deployment.kubernetes.io/revision: "1"
