@@ -461,7 +461,7 @@ jobs:
           exit 1
 
       - name: Send Slack notification (if configured)
-        if: always() && vars.SLACK_WEBHOOK_URL
+        if: always() && env.SLACK_WEBHOOK_URL != ''
         uses: 8398a7/action-slack@v3
         with:
           status: ${{ job.status }}
