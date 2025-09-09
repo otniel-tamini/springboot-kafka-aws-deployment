@@ -1,0 +1,75 @@
+# =================================
+# VARIABLES PAR DÉFAUT - RÔLE MICROSERVICE KUBERNETES
+# =================================
+
+# Configuration de base
+service_name: "default-service"
+replicas: 2
+image_pull_policy: "IfNotPresent"
+image_tag: "latest"
+
+# Configuration réseau
+port: 8080
+service_type: "ClusterIP"
+
+# Annotations et labels communs
+common_labels:
+  app.kubernetes.io/managed-by: "ansible"
+  app.kubernetes.io/part-of: "springboot-kafka-microservices"
+  app.kubernetes.io/version: "{{ image_tag }}"
+  environment: "{{ environment }}"
+
+common_annotations:
+  deployment.kubernetes.io/revision: "1"
+  kubectl.kubernetes.io/last-applied-configuration: "ansible"
+
+# Configuration des ressources par défaut
+default_resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "500m"
+
+# Configuration des health checks par défaut
+default_health_check:
+  initial_delay_seconds: 60
+  period_seconds: 10
+  timeout_seconds: 5
+  failure_threshold: 5
+  success_threshold: 1
+
+# Configuration des Rolling Updates
+rolling_update:
+  max_unavailable: "25%"
+  max_surge: "25%"
+
+# Configuration de sécurité
+security:
+  run_as_non_root: true
+  run_as_user: 1000
+  fs_group: 1000
+
+# Configuration réseau
+network:
+  dns_policy: "ClusterFirst"
+  restart_policy: "Always"
+
+# Configuration du monitoring
+monitoring:
+  enabled: true
+  prometheus:
+    scrape: true
+    port: 8080
+    path: "/actuator/prometheus"
+
+# Variables d'environnement par défaut
+default_environment:
+  SPRING_PROFILES_ACTIVE: "kubernetes"
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,metrics,prometheus"
+  MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "always"
+  MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED: "true"
+  LOGGING_LEVEL_ORG_SPRINGFRAMEWORK: "INFO"
+  LOGGING_LEVEL_ORG_APACHE_KAFKA: "WARN"
+  JAVA_OPTS: "-Xms256m -Xmx512m -XX:+UseG1GC"

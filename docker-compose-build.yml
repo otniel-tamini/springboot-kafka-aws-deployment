@@ -1,0 +1,389 @@
+version: '3.8'
+
+services:
+  # Infrastructure services
+  zookeeper:
+    image: confluentinc/cp-zookeeper:${KAFKA_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME}_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: ${ZOOKEEPER_CLIENT_PORT}
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    networks:
+      - microservices-network
+
+  kafka:
+    image: confluentinc/cp-kafka:${KAFKA_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME}_kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:${ZOOKEEPER_CLIENT_PORT}
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:${KAFKA_INTERNAL_PORT},PLAINTEXT_HOST://localhost:${KAFKA_EXTERNAL_PORT}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_LOG_RETENTION_HOURS: ${KAFKA_LOG_RETENTION_HOURS}
+      KAFKA_LOG_SEGMENT_BYTES: ${KAFKA_LOG_SEGMENT_BYTES}
+    ports:
+      - "${KAFKA_EXTERNAL_PORT}:${KAFKA_EXTERNAL_PORT}"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  redis:
+    image: redis:${REDIS_VERSION}-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}_redis
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+
+  mysql-order:
+    image: mysql:${MYSQL_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME}_mysql_order
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${ORDER_DB_NAME}
+      MYSQL_USER: ${ORDER_DB_USER}
+      MYSQL_PASSWORD: ${ORDER_DB_PASSWORD}
+    ports:
+      - "${ORDER_DB_PORT}:3306"
+    volumes:
+      - mysql-order-data:/var/lib/mysql
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  mysql-product:
+    image: mysql:${MYSQL_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME}_mysql_product
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${PRODUCT_DB_NAME}
+      MYSQL_USER: ${PRODUCT_DB_USER}
+      MYSQL_PASSWORD: ${PRODUCT_DB_PASSWORD}
+    ports:
+      - "${PRODUCT_DB_PORT}:3306"
+    volumes:
+      - mysql-product-data:/var/lib/mysql
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  mysql-payment:
+    image: mysql:${MYSQL_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME}_mysql_payment
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${PAYMENT_DB_NAME}
+      MYSQL_USER: ${PAYMENT_DB_USER}
+      MYSQL_PASSWORD: ${PAYMENT_DB_PASSWORD}
+    ports:
+      - "${PAYMENT_DB_PORT}:3306"
+    volumes:
+      - mysql-payment-data:/var/lib/mysql
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  mysql-identity:
+    image: mysql:${MYSQL_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME}_mysql_identity
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${IDENTITY_DB_NAME}
+      MYSQL_USER: ${IDENTITY_DB_USER}
+      MYSQL_PASSWORD: ${IDENTITY_DB_PASSWORD}
+    ports:
+      - "${IDENTITY_DB_PORT}:3306"
+    volumes:
+      - mysql-identity-data:/var/lib/mysql
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # Microservices
+  service-registry:
+    build:
+      context: ./service-registry
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME}_service_registry
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+      SERVER_PORT: ${SERVICE_REGISTRY_PORT}
+      EUREKA_INSTANCE_HOSTNAME: service-registry
+      EUREKA_CLIENT_REGISTER_WITH_EUREKA: false
+      EUREKA_CLIENT_FETCH_REGISTRY: false
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,prometheus
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+    ports:
+      - "${SERVICE_REGISTRY_PORT}:${SERVICE_REGISTRY_PORT}"
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME}_api_gateway
+    depends_on:
+      service-registry:
+        condition: service_started
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+      SERVER_PORT: ${API_GATEWAY_PORT}
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: ${EUREKA_CLIENT_SERVICE_URL}
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: true
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,prometheus
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+    ports:
+      - "${API_GATEWAY_PORT}:${API_GATEWAY_PORT}"
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  # Copy JAR files and build new services
+  pre-build:
+    image: alpine:latest
+    volumes:
+      - ./common-lib/target:/common-lib-jars
+      - ./order-service/target:/order-service-jars
+      - ./product-service/target:/product-service-jars
+      - ./payment-service/target:/payment-service-jars
+      - ./email-service/target:/email-service-jars
+      - ./identity-service/target:/identity-service-jars
+    command: |
+      sh -c "
+        echo 'Copying JAR files...'
+        ls -la /common-lib-jars/
+        ls -la /order-service-jars/
+        ls -la /product-service-jars/
+        ls -la /payment-service-jars/
+        ls -la /email-service-jars/
+        ls -la /identity-service-jars/
+      "
+
+  order-service:
+    image: eclipse-temurin:17-jre-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}_order_service
+    depends_on:
+      service-registry:
+        condition: service_started
+      mysql-order:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+      SERVER_PORT: ${ORDER_SERVICE_PORT}
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-order:3306/${ORDER_DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${ORDER_DB_USER}
+      SPRING_DATASOURCE_PASSWORD: ${ORDER_DB_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_INTERNAL_PORT}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: ${EUREKA_CLIENT_SERVICE_URL}
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: true
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,prometheus
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+    ports:
+      - "${ORDER_SERVICE_PORT}:${ORDER_SERVICE_PORT}"
+    volumes:
+      - ./order-service/target/order-service.jar:/app/app.jar
+    working_dir: /app
+    command: ["java", "-Djava.security.egd=file:/dev/./urandom", "-jar", "app.jar"]
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  product-service:
+    image: eclipse-temurin:17-jre-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}_product_service
+    depends_on:
+      service-registry:
+        condition: service_started
+      mysql-product:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+      SERVER_PORT: ${PRODUCT_SERVICE_PORT}
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-product:3306/${PRODUCT_DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${PRODUCT_DB_USER}
+      SPRING_DATASOURCE_PASSWORD: ${PRODUCT_DB_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_INTERNAL_PORT}
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: ${EUREKA_CLIENT_SERVICE_URL}
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: true
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,prometheus
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+    ports:
+      - "${PRODUCT_SERVICE_PORT}:${PRODUCT_SERVICE_PORT}"
+    volumes:
+      - ./product-service/target/product-service.jar:/app/app.jar
+    working_dir: /app
+    command: ["java", "-Djava.security.egd=file:/dev/./urandom", "-jar", "app.jar"]
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  payment-service:
+    image: eclipse-temurin:17-jre-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}_payment_service
+    depends_on:
+      service-registry:
+        condition: service_started
+      mysql-payment:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+      SERVER_PORT: ${PAYMENT_SERVICE_PORT}
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-payment:3306/${PAYMENT_DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${PAYMENT_DB_USER}
+      SPRING_DATASOURCE_PASSWORD: ${PAYMENT_DB_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_INTERNAL_PORT}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: ${EUREKA_CLIENT_SERVICE_URL}
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: true
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,prometheus
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+    ports:
+      - "${PAYMENT_SERVICE_PORT}:${PAYMENT_SERVICE_PORT}"
+    volumes:
+      - ./payment-service/target/payment-service.jar:/app/app.jar
+    working_dir: /app
+    command: ["java", "-Djava.security.egd=file:/dev/./urandom", "-jar", "app.jar"]
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  email-service:
+    image: eclipse-temurin:17-jre-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}_email_service
+    depends_on:
+      service-registry:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+      SERVER_PORT: ${EMAIL_SERVICE_PORT}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_INTERNAL_PORT}
+      SPRING_MAIL_HOST: ${MAIL_HOST}
+      SPRING_MAIL_PORT: ${MAIL_PORT}
+      SPRING_MAIL_USERNAME: ${MAIL_USERNAME}
+      SPRING_MAIL_PASSWORD: ${MAIL_PASSWORD}
+      SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH: true
+      SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE: true
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: ${EUREKA_CLIENT_SERVICE_URL}
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: true
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,prometheus
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+    ports:
+      - "${EMAIL_SERVICE_PORT}:${EMAIL_SERVICE_PORT}"
+    volumes:
+      - ./email-service/target/email-service.jar:/app/app.jar
+    working_dir: /app
+    command: ["java", "-Djava.security.egd=file:/dev/./urandom", "-jar", "app.jar"]
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  identity-service:
+    image: eclipse-temurin:17-jre-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}_identity_service
+    depends_on:
+      service-registry:
+        condition: service_started
+      mysql-identity:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+      SERVER_PORT: ${IDENTITY_SERVICE_PORT}
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-identity:3306/${IDENTITY_DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${IDENTITY_DB_USER}
+      SPRING_DATASOURCE_PASSWORD: ${IDENTITY_DB_PASSWORD}
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: ${EUREKA_CLIENT_SERVICE_URL}
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: true
+      APP_JWT_SECRET: ${JWT_SECRET}
+      APP_JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS}
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,prometheus
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+    ports:
+      - "${IDENTITY_SERVICE_PORT}:${IDENTITY_SERVICE_PORT}"
+    volumes:
+      - ./identity-service/target/identity-service.jar:/app/app.jar
+    working_dir: /app
+    command: ["java", "-Djava.security.egd=file:/dev/./urandom", "-jar", "app.jar"]
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+volumes:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  redis-data:
+  mysql-order-data:
+  mysql-product-data:
+  mysql-payment-data:
+  mysql-identity-data:
+
+networks:
+  microservices-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

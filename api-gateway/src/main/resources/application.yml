@@ -2,10 +2,10 @@ spring:
   application:
     name: api-gateway
   zipkin:
-      base-url: http://127.0.0.1:9411/
+      base-url: ${ZIPKIN_BASE_URL:http://127.0.0.1:9411/}
   sleuth:
       sampler:
-        probability: 1
+        probability: ${TRACING_SAMPLING_PROBABILITY:1}
   cloud:
     gateway:
       routes:
@@ -79,7 +79,7 @@ spring:
       globalcors:
         cors-configurations:
           '[/**]':
-            allowed-origins: "http://localhost:3000"
+            allowed-origins: ${ALLOWED_ORIGINS:http://localhost:3000}
             allowed-methods: "GET, POST, PUT, DELETE, OPTIONS"
             allowed-headers: "Content-Type, Authorization, Accept, Origin, X-Requested-With, X-Csrf-Token, If-Match"
             allow-credentials: true
@@ -96,6 +96,6 @@ management:
         include: "*"
   tracing:
     sampling:
-      probability: 1
+      probability: ${TRACING_SAMPLING_PROBABILITY:1}
 server:
-  port: 9191
+  port: ${API_GATEWAY_PORT:9191}

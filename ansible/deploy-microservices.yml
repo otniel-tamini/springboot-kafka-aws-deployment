@@ -1,0 +1,152 @@
+# =================================
+# PLAYBOOK PRINCIPAL - DÉPLOIEMENT MICROSERVICES
+# =================================
+
+---
+- name: "🚀 Déploiement des microservices Spring Boot Kafka sur EKS"
+  hosts: k8s_cluster
+  gather_facts: yes
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    
+  pre_tasks:
+    - name: "🔍 Vérifier la connexion au cluster Kubernetes"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: default
+      register: k8s_connection
+      
+    - name: "✅ Cluster Kubernetes accessible"
+      debug:
+        msg: "Connexion au cluster EKS établie avec succès"
+      when: k8s_connection is succeeded
+      
+    - name: "📋 Afficher les informations du déploiement"
+      debug:
+        msg: |
+          🚀 DÉPLOIEMENT MICROSERVICES SPRING BOOT KAFKA
+          ================================================
+          🌍 Environnement: {{ environment }}
+          🏗️  Namespace: {{ k8s_namespace }}
+          📊 Services à déployer: {{ groups['microservices'] | length }}
+          🔧 Version: {{ common_image_tag }}
+
+  tasks:
+    - name: "📦 Déployer les microservices"
+      include_role:
+        name: k8s-microservice
+      vars:
+        service_name: "{{ hostvars[item]['service_name'] }}"
+        image: "{{ hostvars[item]['image'] }}"
+        image_tag: "{{ hostvars[item]['image_tag'] | default(common_image_tag) }}"
+        port: "{{ hostvars[item]['port'] }}"
+        replicas: "{{ hostvars[item]['replicas'] }}"
+        environment: "{{ hostvars[item]['environment'] | default({}) | combine(global_environment) }}"
+        secret_environment: "{{ hostvars[item]['secret_environment'] | default({}) | combine(global_secret_environment) }}"
+        resources: "{{ hostvars[item]['resources'] | default({}) }}"
+        health_check: "{{ hostvars[item]['health_check'] }}"
+        monitoring: "{{ hostvars[item]['monitoring'] | default({'enabled': true}) }}"
+      loop: "{{ groups['microservices'] }}"
+      loop_control:
+        loop_var: item
+        label: "{{ hostvars[item]['service_name'] }}"
+      tags: [deploy]
+
+  post_tasks:
+    - name: "📊 Récupérer l'état de tous les déploiements"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ k8s_namespace }}"
+      register: all_deployments
+      
+    - name: "📈 Récupérer l'état de tous les services"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        namespace: "{{ k8s_namespace }}"
+      register: all_services
+      
+    - name: "🏃 Récupérer l'état de tous les pods"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ k8s_namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/part-of=springboot-kafka-microservices"
+      register: all_pods
+
+    - name: "📋 Afficher le résumé du déploiement"
+      debug:
+        msg: |
+          🎉 DÉPLOIEMENT TERMINÉ AVEC SUCCÈS !
+          ====================================
+          
+          📊 STATISTIQUES:
+          ├── Déploiements: {{ all_deployments.resources | length }}
+          ├── Services: {{ all_services.resources | length }}
+          ├── Pods Total: {{ all_pods.resources | length }}
+          └── Pods Actifs: {{ all_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}
+          
+          🚀 SERVICES DÉPLOYÉS:
+          {% for deployment in all_deployments.resources %}
+          ├── {{ deployment.metadata.name }}
+          │   ├── Replicas: {{ deployment.status.replicas | default(0) }}/{{ deployment.spec.replicas }}
+          │   ├── Prêt: {{ deployment.status.readyReplicas | default(0) }}
+          │   └── Image: {{ deployment.spec.template.spec.containers[0].image }}
+          {% endfor %}
+          
+          🌐 ACCÈS AUX SERVICES:
+          {% for service in all_services.resources %}
+          ├── {{ service.metadata.name }}: {{ service.spec.clusterIP }}:{{ service.spec.ports[0].port }}
+          {% endfor %}
+          
+          📍 PROCHAINES ÉTAPES:
+          1. Vérifier les logs: kubectl logs -n {{ k8s_namespace }} -l app.kubernetes.io/part-of=springboot-kafka-microservices
+          2. Port-forward pour tests: kubectl port-forward -n {{ k8s_namespace }} svc/api-gateway 8080:8080
+          3. Surveiller les métriques: kubectl port-forward -n {{ k8s_namespace }} svc/prometheus 9090:9090
+          
+          ✅ Tous les microservices sont opérationnels !
+
+---
+# =================================
+# PLAYBOOK DE MONITORING ET VÉRIFICATIONS
+# =================================
+
+- name: "📊 Vérification de santé des microservices"
+  hosts: k8s_cluster
+  gather_facts: no
+  become: false
+  
+  tasks:
+    - name: "🏥 Vérifier la santé de chaque microservice"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ k8s_namespace }}"
+        label_selectors:
+          - "app={{ hostvars[item]['service_name'] }}"
+      register: service_health
+      loop: "{{ groups['microservices'] }}"
+      loop_control:
+        loop_var: item
+        label: "{{ hostvars[item]['service_name'] }}"
+        
+    - name: "📈 Afficher le statut de santé"
+      debug:
+        msg: |
+          🏥 RAPPORT DE SANTÉ - {{ hostvars[item]['service_name'] }}
+          ================================================
+          🏃 Pods en cours: {{ service_health.results[loop_index].resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}
+          📊 Pods total: {{ service_health.results[loop_index].resources | length }}
+          {% for pod in service_health.results[loop_index].resources %}
+          ├── {{ pod.metadata.name }}: {{ pod.status.phase }}
+          {% endfor %}
+      loop: "{{ groups['microservices'] }}"
+      loop_control:
+        loop_var: item
+        index_var: loop_index
+        label: "{{ hostvars[item]['service_name'] }}"
+      tags: [health]

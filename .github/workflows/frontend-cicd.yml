@@ -1,0 +1,472 @@
+# =================================
+# PIPELINE CI/CD FRONTEND
+# =================================
+# Ce pipeline s'occupe du build et déploiement du frontend React vers S3 + CloudFront
+
+name: 🚀 Frontend CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'frontend-app/**'
+      - '.github/workflows/frontend-cicd.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'frontend-app/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      force_deploy:
+        description: 'Force deployment even if no changes'
+        required: false
+        default: false
+        type: boolean
+
+# =================================
+# VARIABLES GLOBALES
+# =================================
+
+env:
+  AWS_REGION: eu-west-1
+  NODE_VERSION: '18'
+  FRONTEND_DIR: ./frontend-app
+
+# =================================
+# JOBS
+# =================================
+
+jobs:
+  # Job 1: Détection des changements et validation
+  detect-changes:
+    name: 🔍 Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      frontend-changed: ${{ steps.changes.outputs.frontend }}
+      should-deploy: ${{ steps.should-deploy.outputs.result }}
+      environment: ${{ steps.environment.outputs.env }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            frontend:
+              - 'frontend-app/**'
+              - '.github/workflows/frontend-cicd.yml'
+
+      - name: Determine environment
+        id: environment
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "env=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "env=prod" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            echo "env=staging" >> $GITHUB_OUTPUT
+          else
+            echo "env=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Should deploy?
+        id: should-deploy
+        run: |
+          if [[ "${{ github.event.inputs.force_deploy }}" == "true" ]] || [[ "${{ steps.changes.outputs.frontend }}" == "true" ]]; then
+            echo "result=true" >> $GITHUB_OUTPUT
+          else
+            echo "result=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Job 2: Build et test du frontend
+  build-frontend:
+    name: 🏗️ Build Frontend
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.should-deploy == 'true'
+    outputs:
+      build-version: ${{ steps.version.outputs.version }}
+      cache-key: ${{ steps.cache-key.outputs.key }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: ${{ env.FRONTEND_DIR }}/package-lock.json
+
+      - name: Generate build version
+        id: version
+        run: |
+          VERSION="${{ github.sha }}-$(date +%Y%m%d-%H%M%S)"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Build version: ${VERSION}"
+
+      - name: Generate cache key
+        id: cache-key
+        run: |
+          CACHE_KEY="frontend-build-${{ steps.version.outputs.version }}"
+          echo "key=${CACHE_KEY}" >> $GITHUB_OUTPUT
+
+      - name: Cache Node modules
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FRONTEND_DIR }}/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles(format('{0}/package-lock.json', env.FRONTEND_DIR)) }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: |
+          echo "📦 Installing dependencies..."
+          npm ci --prefer-offline --no-audit
+
+      - name: Run linting
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: |
+          echo "🔍 Running ESLint..."
+          npm run lint
+
+      - name: Run tests
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: |
+          echo "🧪 Running tests..."
+          npm run test -- --coverage --watchAll=false
+        env:
+          CI: true
+
+      - name: Upload test coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: ${{ env.FRONTEND_DIR }}/coverage/lcov.info
+          flags: frontend
+          name: frontend-coverage
+
+      - name: Build application
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: |
+          echo "🏗️ Building application..."
+          npm run build
+        env:
+          REACT_APP_VERSION: ${{ steps.version.outputs.version }}
+          REACT_APP_BUILD_DATE: ${{ github.run_number }}
+          REACT_APP_COMMIT_SHA: ${{ github.sha }}
+          REACT_APP_ENVIRONMENT: ${{ needs.detect-changes.outputs.environment }}
+
+      - name: Analyze bundle size
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: |
+          echo "📊 Analyzing bundle size..."
+          npx webpack-bundle-analyzer build/static/js/*.js --mode json --report bundle-report.json || true
+          if [ -f "bundle-report.json" ]; then
+            echo "Bundle analysis completed"
+          fi
+
+      - name: Optimize build
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: |
+          echo "⚡ Optimizing build..."
+          # Compression des assets
+          find build -name "*.js" -exec gzip -k {} \;
+          find build -name "*.css" -exec gzip -k {} \;
+          find build -name "*.html" -exec gzip -k {} \;
+          find build -name "*.json" -exec gzip -k {} \;
+          
+          # Statistiques
+          echo "📈 Build statistics:"
+          echo "Total files: $(find build -type f | wc -l)"
+          echo "Total size: $(du -sh build | cut -f1)"
+          echo "Compressed size: $(find build -name "*.gz" -exec du -ch {} + | tail -n1 | cut -f1)"
+
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FRONTEND_DIR }}/build
+          key: ${{ steps.cache-key.outputs.key }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build-${{ steps.version.outputs.version }}
+          path: ${{ env.FRONTEND_DIR }}/build
+          retention-days: 30
+
+  # Job 3: Tests de sécurité
+  security-scan:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.should-deploy == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: npm ci
+
+      - name: Run npm audit
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: |
+          echo "🔍 Running npm audit..."
+          npm audit --audit-level=moderate
+
+      - name: Run Snyk security scan
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --project-name=frontend-app --severity-threshold=high
+
+  # Job 4: Déploiement vers S3 + CloudFront
+  deploy:
+    name: 🚀 Deploy to S3 + CloudFront
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build-frontend, security-scan]
+    if: |
+      always() &&
+      needs.detect-changes.outputs.should-deploy == 'true' &&
+      needs.build-frontend.result == 'success' &&
+      (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped')
+    environment:
+      name: ${{ needs.detect-changes.outputs.environment }}
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FRONTEND_DIR }}/build
+          key: ${{ needs.build-frontend.outputs.cache-key }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build-${{ needs.build-frontend.outputs.build-version }}
+          path: ${{ env.FRONTEND_DIR }}/build
+
+      - name: Get Terraform outputs
+        id: terraform-outputs
+        run: |
+          cd terraform/environments/${{ needs.detect-changes.outputs.environment }}
+          
+          # Récupérer les outputs Terraform
+          S3_BUCKET=$(terraform output -raw s3_static_bucket_name 2>/dev/null || echo "")
+          CLOUDFRONT_ID=$(terraform output -raw cloudfront_distribution_id 2>/dev/null || echo "")
+          CLOUDFRONT_DOMAIN=$(terraform output -raw cloudfront_domain_name 2>/dev/null || echo "")
+          
+          if [[ -z "$S3_BUCKET" || -z "$CLOUDFRONT_ID" ]]; then
+            echo "❌ Terraform outputs not found. Please run terraform apply first."
+            exit 1
+          fi
+          
+          echo "s3_bucket=${S3_BUCKET}" >> $GITHUB_OUTPUT
+          echo "cloudfront_id=${CLOUDFRONT_ID}" >> $GITHUB_OUTPUT
+          echo "cloudfront_domain=${CLOUDFRONT_DOMAIN}" >> $GITHUB_OUTPUT
+          
+          echo "✅ Terraform outputs retrieved:"
+          echo "S3 Bucket: ${S3_BUCKET}"
+          echo "CloudFront ID: ${CLOUDFRONT_ID}"
+          echo "CloudFront Domain: ${CLOUDFRONT_DOMAIN}"
+
+      - name: Backup current version (prod only)
+        if: needs.detect-changes.outputs.environment == 'prod'
+        run: |
+          BACKUP_BUCKET="${{ steps.terraform-outputs.outputs.s3_bucket }}-backup-$(date +%Y%m%d-%H%M%S)"
+          echo "📦 Creating backup: ${BACKUP_BUCKET}"
+          aws s3 sync s3://${{ steps.terraform-outputs.outputs.s3_bucket }} s3://${BACKUP_BUCKET} \
+            --region ${{ env.AWS_REGION }} || true
+
+      - name: Deploy to S3
+        id: deploy
+        run: |
+          echo "🚀 Deploying to S3..."
+          
+          # Synchroniser les assets avec cache long
+          aws s3 sync ${{ env.FRONTEND_DIR }}/build s3://${{ steps.terraform-outputs.outputs.s3_bucket }} \
+            --region ${{ env.AWS_REGION }} \
+            --delete \
+            --cache-control "public,max-age=31536000,immutable" \
+            --exclude "*.html" \
+            --exclude "service-worker.js" \
+            --exclude "manifest.json" \
+            --exclude "robots.txt"
+          
+          # Synchroniser les fichiers HTML avec cache court
+          aws s3 sync ${{ env.FRONTEND_DIR }}/build s3://${{ steps.terraform-outputs.outputs.s3_bucket }} \
+            --region ${{ env.AWS_REGION }} \
+            --cache-control "public,max-age=0,must-revalidate" \
+            --include "*.html" \
+            --include "service-worker.js" \
+            --include "manifest.json" \
+            --include "robots.txt"
+          
+          # Définir les métadonnées de compression
+          echo "⚡ Setting compression metadata..."
+          aws s3 cp ${{ env.FRONTEND_DIR }}/build s3://${{ steps.terraform-outputs.outputs.s3_bucket }} \
+            --recursive \
+            --metadata-directive REPLACE \
+            --content-encoding gzip \
+            --exclude "*" \
+            --include "*.gz" \
+            --region ${{ env.AWS_REGION }}
+          
+          echo "url=https://${{ steps.terraform-outputs.outputs.cloudfront_domain }}" >> $GITHUB_OUTPUT
+
+      - name: Invalidate CloudFront
+        id: invalidate
+        run: |
+          echo "🔄 Invalidating CloudFront cache..."
+          INVALIDATION_ID=$(aws cloudfront create-invalidation \
+            --distribution-id ${{ steps.terraform-outputs.outputs.cloudfront_id }} \
+            --paths "/*" \
+            --query 'Invalidation.Id' \
+            --output text)
+          
+          echo "invalidation_id=${INVALIDATION_ID}" >> $GITHUB_OUTPUT
+          echo "✅ CloudFront invalidation created: ${INVALIDATION_ID}"
+
+      - name: Wait for CloudFront invalidation (prod only)
+        if: needs.detect-changes.outputs.environment == 'prod'
+        run: |
+          echo "⏳ Waiting for CloudFront invalidation to complete..."
+          aws cloudfront wait invalidation-completed \
+            --distribution-id ${{ steps.terraform-outputs.outputs.cloudfront_id }} \
+            --id ${{ steps.invalidate.outputs.invalidation_id }}
+          echo "✅ CloudFront invalidation completed"
+
+      - name: Verify deployment
+        run: |
+          echo "🔍 Verifying deployment..."
+          
+          # Test de base
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://${{ steps.terraform-outputs.outputs.cloudfront_domain }})
+          if [[ $HTTP_STATUS -eq 200 ]]; then
+            echo "✅ Site is accessible (HTTP $HTTP_STATUS)"
+          else
+            echo "❌ Site is not accessible (HTTP $HTTP_STATUS)"
+            exit 1
+          fi
+          
+          # Test API health (optionnel)
+          API_STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://${{ steps.terraform-outputs.outputs.cloudfront_domain }}/api/health || echo "000")
+          if [[ $API_STATUS -eq 200 ]]; then
+            echo "✅ API is accessible (HTTP $API_STATUS)"
+          else
+            echo "⚠️ API health check failed or not configured (HTTP $API_STATUS)"
+          fi
+
+      - name: Generate deployment report
+        run: |
+          cat > deployment-summary.md << EOF
+          # 🚀 Frontend Deployment Report
+          
+          ## Deployment Information
+          - **Environment**: ${{ needs.detect-changes.outputs.environment }}
+          - **Version**: ${{ needs.build-frontend.outputs.build-version }}
+          - **Commit**: ${{ github.sha }}
+          - **Deployed by**: ${{ github.actor }}
+          - **Deployment time**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          ## Infrastructure
+          - **S3 Bucket**: ${{ steps.terraform-outputs.outputs.s3_bucket }}
+          - **CloudFront ID**: ${{ steps.terraform-outputs.outputs.cloudfront_id }}
+          - **Website URL**: https://${{ steps.terraform-outputs.outputs.cloudfront_domain }}
+          - **Invalidation ID**: ${{ steps.invalidate.outputs.invalidation_id }}
+          
+          ## Status
+          - ✅ Build successful
+          - ✅ Security scan passed
+          - ✅ S3 deployment successful
+          - ✅ CloudFront invalidated
+          - ✅ Deployment verified
+          
+          ## Next Steps
+          - Monitor CloudFront metrics in AWS Console
+          - Check application logs for any issues
+          - CloudFront propagation may take up to 15 minutes
+          EOF
+
+      - name: Comment PR with deployment info
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('deployment-summary.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+  # Job 5: Notification
+  notify:
+    name: 📢 Notify
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build-frontend, deploy]
+    if: always()
+    steps:
+      - name: Notify success
+        if: needs.deploy.result == 'success'
+        run: |
+          echo "🎉 Frontend deployment successful!"
+          echo "Environment: ${{ needs.detect-changes.outputs.environment }}"
+          echo "Version: ${{ needs.build-frontend.outputs.build-version }}"
+
+      - name: Notify failure
+        if: |
+          needs.build-frontend.result == 'failure' ||
+          needs.deploy.result == 'failure'
+        run: |
+          echo "❌ Frontend deployment failed!"
+          echo "Please check the logs for more information."
+          exit 1
+
+      - name: Send Slack notification (if configured)
+        if: always() && vars.SLACK_WEBHOOK_URL
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

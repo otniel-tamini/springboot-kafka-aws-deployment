@@ -1,0 +1,52 @@
+# =================================
+# VARIABLES CHIFFRÉES - VAULT
+# =================================
+
+# Informations sensibles - à chiffrer avec ansible-vault
+
+# AWS Account ID
+vault_aws_account_id: "501123610449"
+
+# Registry Docker (si privé)
+vault_docker_registry: "haphong463"
+
+# Configuration des bases de données (à récupérer depuis Terraform outputs)
+vault_order_db_host: "changeme-order-db-endpoint"
+vault_order_db_username: "order_admin"
+vault_order_db_password: "OrderSecurePassword123!"
+
+vault_payment_db_host: "changeme-payment-db-endpoint"
+vault_payment_db_username: "payment_admin" 
+vault_payment_db_password: "PaymentSecurePassword123!"
+
+vault_product_db_host: "changeme-product-db-endpoint"
+vault_product_db_username: "product_admin"
+vault_product_db_password: "ProductSecurePassword123!"
+
+vault_identity_db_host: "changeme-identity-db-endpoint"
+vault_identity_db_username: "identity_admin"
+vault_identity_db_password: "IdentitySecurePassword123!"
+
+# Configuration Kafka (à récupérer depuis Terraform outputs)
+vault_kafka_bootstrap_servers: "changeme-kafka-brokers"
+
+# Configuration Redis (à récupérer depuis Terraform outputs)
+vault_redis_host: "changeme-redis-endpoint"
+
+# Configuration monitoring
+vault_grafana_admin_password: "AdminSecurePassword123!"
+
+# Configuration SMTP (pour email-service)
+vault_smtp_host: "smtp.gmail.com"
+vault_smtp_port: "587"
+vault_smtp_username: "your-email@gmail.com"
+vault_smtp_password: "your-app-password"
+
+# Clés API et secrets applicatifs
+vault_jwt_secret: "MyVerySecureJWTSecretKey123456789"
+vault_encryption_key: "MyVerySecureEncryptionKey123456"
+
+# Configuration PayPal (pour payment-service)
+vault_paypal_client_id: "your-paypal-client-id"
+vault_paypal_client_secret: "your-paypal-client-secret"
+vault_paypal_mode: "sandbox"  # ou "live" pour production

@@ -1,0 +1,304 @@
+# =================================
+# PLAYBOOK D'INFRASTRUCTURE KAFKA ET BASES DE DONNÉES
+# =================================
+
+---
+- name: "🗄️ Déploiement de l'infrastructure de données (Kafka, MySQL, Redis)"
+  hosts: k8s_cluster
+  gather_facts: yes
+  become: false
+  
+  vars:
+    infrastructure_namespace: "infrastructure"
+    
+  pre_tasks:
+    - name: "📋 Créer le namespace infrastructure"
+      kubernetes.core.k8s:
+        name: "{{ infrastructure_namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+        definition:
+          metadata:
+            labels:
+              name: "{{ infrastructure_namespace }}"
+              managed-by: ansible
+              component: infrastructure
+
+  tasks:
+    # =================================
+    # DÉPLOIEMENT KAFKA (BITNAMI)
+    # =================================
+    - name: "📦 Ajouter le repository Helm Bitnami"
+      kubernetes.core.helm_repository:
+        name: bitnami
+        repo_url: https://charts.bitnami.com/bitnami
+        
+    - name: "☕ Déployer Kafka avec Helm"
+      kubernetes.core.helm:
+        name: kafka
+        chart_ref: bitnami/kafka
+        release_namespace: "{{ infrastructure_namespace }}"
+        create_namespace: true
+        values:
+          persistence:
+            enabled: true
+            size: 10Gi
+          zookeeper:
+            persistence:
+              enabled: true
+              size: 5Gi
+          replicaCount: 3
+          auth:
+            enabled: false
+          listeners:
+            client:
+              protocol: PLAINTEXT
+            controller:
+              protocol: PLAINTEXT
+          controller:
+            replicaCount: 3
+          logRetentionBytes: 1073741824
+          logRetentionHours: 168
+          maxMessageBytes: 1000012
+          service:
+            type: ClusterIP
+            ports:
+              client: 9092
+          metrics:
+            kafka:
+              enabled: true
+            jmx:
+              enabled: true
+      tags: [kafka]
+
+    # =================================
+    # DÉPLOIEMENT MYSQL
+    # =================================
+    - name: "🗄️ Déployer MySQL avec Helm"
+      kubernetes.core.helm:
+        name: mysql
+        chart_ref: bitnami/mysql
+        release_namespace: "{{ infrastructure_namespace }}"
+        values:
+          auth:
+            rootPassword: "{{ mysql_root_password }}"
+            database: "springboot_microservices"
+            username: "{{ mysql_username }}"
+            password: "{{ mysql_password }}"
+          primary:
+            persistence:
+              enabled: true
+              size: 20Gi
+              storageClass: gp3
+            resources:
+              requests:
+                memory: 1Gi
+                cpu: 500m
+              limits:
+                memory: 2Gi
+                cpu: 1000m
+          metrics:
+            enabled: true
+            serviceMonitor:
+              enabled: true
+          service:
+            type: ClusterIP
+            ports:
+              mysql: 3306
+      tags: [mysql]
+
+    # =================================
+    # DÉPLOIEMENT REDIS
+    # =================================
+    - name: "🔴 Déployer Redis avec Helm"
+      kubernetes.core.helm:
+        name: redis
+        chart_ref: bitnami/redis
+        release_namespace: "{{ infrastructure_namespace }}"
+        values:
+          auth:
+            enabled: true
+            password: "{{ redis_password }}"
+          master:
+            persistence:
+              enabled: true
+              size: 5Gi
+              storageClass: gp3
+            resources:
+              requests:
+                memory: 512Mi
+                cpu: 250m
+              limits:
+                memory: 1Gi
+                cpu: 500m
+          replica:
+            replicaCount: 2
+            persistence:
+              enabled: true
+              size: 5Gi
+              storageClass: gp3
+          metrics:
+            enabled: true
+            serviceMonitor:
+              enabled: true
+          service:
+            type: ClusterIP
+            ports:
+              redis: 6379
+      tags: [redis]
+
+    # =================================
+    # DÉPLOIEMENT PROMETHEUS STACK
+    # =================================
+    - name: "📊 Ajouter le repository Helm Prometheus"
+      kubernetes.core.helm_repository:
+        name: prometheus-community
+        repo_url: https://prometheus-community.github.io/helm-charts
+
+    - name: "📈 Déployer la stack de monitoring Prometheus"
+      kubernetes.core.helm:
+        name: monitoring-stack
+        chart_ref: prometheus-community/kube-prometheus-stack
+        release_namespace: "{{ infrastructure_namespace }}"
+        values:
+          prometheus:
+            prometheusSpec:
+              storageSpec:
+                volumeClaimTemplate:
+                  spec:
+                    storageClassName: gp3
+                    accessModes: ["ReadWriteOnce"]
+                    resources:
+                      requests:
+                        storage: 10Gi
+              resources:
+                requests:
+                  memory: 1Gi
+                  cpu: 500m
+                limits:
+                  memory: 2Gi
+                  cpu: 1000m
+          grafana:
+            adminPassword: "{{ grafana_admin_password }}"
+            persistence:
+              enabled: true
+              size: 5Gi
+              storageClassName: gp3
+            service:
+              type: ClusterIP
+              port: 3000
+          alertmanager:
+            alertmanagerSpec:
+              storage:
+                volumeClaimTemplate:
+                  spec:
+                    storageClassName: gp3
+                    accessModes: ["ReadWriteOnce"]
+                    resources:
+                      requests:
+                        storage: 2Gi
+      tags: [monitoring]
+
+  post_tasks:
+    - name: "⏳ Attendre que Kafka soit prêt"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: StatefulSet
+        name: kafka
+        namespace: "{{ infrastructure_namespace }}"
+        wait: true
+        wait_condition:
+          type: Ready
+        wait_timeout: 600
+      tags: [verify]
+
+    - name: "⏳ Attendre que MySQL soit prêt"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: StatefulSet
+        name: mysql
+        namespace: "{{ infrastructure_namespace }}"
+        wait: true
+        wait_condition:
+          type: Ready
+        wait_timeout: 300
+      tags: [verify]
+
+    - name: "⏳ Attendre que Redis soit prêt"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: StatefulSet
+        name: redis-master
+        namespace: "{{ infrastructure_namespace }}"
+        wait: true
+        wait_condition:
+          type: Ready
+        wait_timeout: 300
+      tags: [verify]
+
+    - name: "📋 Créer les ConfigMaps de connexion pour les microservices"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: infrastructure-config
+            namespace: "{{ k8s_namespace }}"
+          data:
+            SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka.{{ infrastructure_namespace }}.svc.cluster.local:9092"
+            SPRING_DATASOURCE_URL: "jdbc:mysql://mysql.{{ infrastructure_namespace }}.svc.cluster.local:3306/springboot_microservices"
+            SPRING_REDIS_HOST: "redis-master.{{ infrastructure_namespace }}.svc.cluster.local"
+            SPRING_REDIS_PORT: "6379"
+      tags: [config]
+
+    - name: "🔐 Créer les Secrets de connexion pour les microservices"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: infrastructure-secrets
+            namespace: "{{ k8s_namespace }}"
+          type: Opaque
+          data:
+            SPRING_DATASOURCE_USERNAME: "{{ mysql_username | b64encode }}"
+            SPRING_DATASOURCE_PASSWORD: "{{ mysql_password | b64encode }}"
+            SPRING_REDIS_PASSWORD: "{{ redis_password | b64encode }}"
+      tags: [config]
+
+    - name: "📊 Afficher le résumé de l'infrastructure"
+      debug:
+        msg: |
+          🎉 INFRASTRUCTURE DÉPLOYÉE AVEC SUCCÈS !
+          ========================================
+          
+          ☕ KAFKA:
+          ├── Endpoint: kafka.{{ infrastructure_namespace }}.svc.cluster.local:9092
+          ├── Replicas: 3
+          └── Persistance: 10Gi
+          
+          🗄️ MYSQL:
+          ├── Endpoint: mysql.{{ infrastructure_namespace }}.svc.cluster.local:3306
+          ├── Base de données: springboot_microservices
+          ├── Utilisateur: {{ mysql_username }}
+          └── Persistance: 20Gi
+          
+          🔴 REDIS:
+          ├── Endpoint: redis-master.{{ infrastructure_namespace }}.svc.cluster.local:6379
+          ├── Replicas: 1 master + 2 replicas
+          └── Persistance: 5Gi
+          
+          📊 MONITORING:
+          ├── Prometheus: monitoring-stack-prometheus.{{ infrastructure_namespace }}.svc.cluster.local:9090
+          ├── Grafana: monitoring-stack-grafana.{{ infrastructure_namespace }}.svc.cluster.local:3000
+          └── AlertManager: monitoring-stack-alertmanager.{{ infrastructure_namespace }}.svc.cluster.local:9093
+          
+          📍 PROCHAINES ÉTAPES:
+          1. Accéder à Grafana: kubectl port-forward -n {{ infrastructure_namespace }} svc/monitoring-stack-grafana 3000:3000
+          2. Accéder à Prometheus: kubectl port-forward -n {{ infrastructure_namespace }} svc/monitoring-stack-prometheus 9090:9090
+          3. Vérifier Kafka: kubectl exec -n {{ infrastructure_namespace }} kafka-0 -- kafka-topics.sh --bootstrap-server localhost:9092 --list
+          
+          ✅ Infrastructure prête pour les microservices !

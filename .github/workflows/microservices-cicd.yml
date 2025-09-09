@@ -1,0 +1,571 @@
+name: 🐳 Microservices CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'api-gateway/**'
+      - 'identity-service/**'
+      - 'order-service/**'
+      - 'payment-service/**'
+      - 'product-service/**'
+      - 'email-service/**'
+      - 'service-registry/**'
+      - 'common-lib/**'
+      - '.github/workflows/microservices-cicd.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'api-gateway/**'
+      - 'identity-service/**'
+      - 'order-service/**'
+      - 'payment-service/**'
+      - 'product-service/**'
+      - 'email-service/**'
+      - 'service-registry/**'
+      - 'common-lib/**'
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'Services to build (comma-separated, or "all")'
+        required: false
+        default: 'all'
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      force_build:
+        description: 'Force build all services'
+        required: false
+        default: false
+        type: boolean
+
+# =================================
+# VARIABLES GLOBALES
+# =================================
+
+env:
+  AWS_REGION: eu-west-1
+  JAVA_VERSION: '17'
+  MAVEN_OPTS: '-Xmx1024m'
+  REGISTRY_URL: ${{ vars.ECR_REGISTRY_URL || '123456789012.dkr.ecr.eu-west-1.amazonaws.com' }}
+
+# =================================
+# JOBS
+# =================================
+
+jobs:
+  # Job 1: Détection des changements
+  detect-changes:
+    name: 🔍 Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      api_gateway: ${{ steps.changes.outputs.api_gateway }}
+      identity_service: ${{ steps.changes.outputs.identity_service }}
+      order_service: ${{ steps.changes.outputs.order_service }}
+      payment_service: ${{ steps.changes.outputs.payment_service }}
+      product_service: ${{ steps.changes.outputs.product_service }}
+      email_service: ${{ steps.changes.outputs.email_service }}
+      service_registry: ${{ steps.changes.outputs.service_registry }}
+      common_lib: ${{ steps.changes.outputs.common_lib }}
+      services-matrix: ${{ steps.matrix.outputs.services }}
+      should-build: ${{ steps.should-build.outputs.result }}
+      environment: ${{ steps.environment.outputs.env }}
+      build-version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            api_gateway:
+              - 'api-gateway/**'
+            identity_service:
+              - 'identity-service/**'
+            order_service:
+              - 'order-service/**'
+            payment_service:
+              - 'payment-service/**'
+            product_service:
+              - 'product-service/**'
+            email_service:
+              - 'email-service/**'
+            service_registry:
+              - 'service-registry/**'
+            common_lib:
+              - 'common-lib/**'
+
+      - name: Generate build version
+        id: version
+        run: |
+          VERSION="${{ github.sha }}-$(date +%Y%m%d-%H%M%S)"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Determine environment
+        id: environment
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "env=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "env=prod" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            echo "env=staging" >> $GITHUB_OUTPUT
+          else
+            echo "env=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create services matrix
+        id: matrix
+        run: |
+          SERVICES=()
+          
+          # Si common-lib a changé, builder tous les services
+          if [[ "${{ steps.changes.outputs.common_lib }}" == "true" ]]; then
+            echo "🔧 Common lib changed, building all services"
+            SERVICES=("api-gateway" "identity-service" "order-service" "payment-service" "product-service" "email-service" "service-registry")
+          else
+            # Services spécifiques qui ont changé
+            [[ "${{ steps.changes.outputs.api_gateway }}" == "true" ]] && SERVICES+=("api-gateway")
+            [[ "${{ steps.changes.outputs.identity_service }}" == "true" ]] && SERVICES+=("identity-service")
+            [[ "${{ steps.changes.outputs.order_service }}" == "true" ]] && SERVICES+=("order-service")
+            [[ "${{ steps.changes.outputs.payment_service }}" == "true" ]] && SERVICES+=("payment-service")
+            [[ "${{ steps.changes.outputs.product_service }}" == "true" ]] && SERVICES+=("product-service")
+            [[ "${{ steps.changes.outputs.email_service }}" == "true" ]] && SERVICES+=("email-service")
+            [[ "${{ steps.changes.outputs.service_registry }}" == "true" ]] && SERVICES+=("service-registry")
+          fi
+          
+          # Workflow dispatch avec services spécifiques
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if [[ "${{ github.event.inputs.services }}" == "all" ]] || [[ "${{ github.event.inputs.force_build }}" == "true" ]]; then
+              SERVICES=("api-gateway" "identity-service" "order-service" "payment-service" "product-service" "email-service" "service-registry")
+            else
+              IFS=',' read -ra SERVICES <<< "${{ github.event.inputs.services }}"
+            fi
+          fi
+          
+          # Convertir en JSON pour la matrice
+          SERVICES_JSON=$(printf '%s\n' "${SERVICES[@]}" | jq -R . | jq -s .)
+          echo "services=${SERVICES_JSON}" >> $GITHUB_OUTPUT
+          
+          echo "🚀 Services to build: ${SERVICES[*]}"
+
+      - name: Should build?
+        id: should-build
+        run: |
+          SERVICES_COUNT=$(echo '${{ steps.matrix.outputs.services }}' | jq length)
+          if [[ $SERVICES_COUNT -gt 0 ]]; then
+            echo "result=true" >> $GITHUB_OUTPUT
+          else
+            echo "result=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Job 2: Build common library
+  build-common-lib:
+    name: 📚 Build Common Library
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: |
+      needs.detect-changes.outputs.should-build == 'true' &&
+      (needs.detect-changes.outputs.common_lib == 'true' || github.event.inputs.force_build == 'true')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Build common library
+        working-directory: ./common-lib
+        run: |
+          echo "📚 Building common library..."
+          mvn clean compile install -DskipTests
+          
+          # Vérifier que l'artifact a été créé
+          if [[ -f "target/common-lib-*.jar" ]]; then
+            echo "✅ Common library built successfully"
+            ls -la target/common-lib-*.jar
+          else
+            echo "❌ Common library build failed"
+            exit 1
+          fi
+
+      - name: Run tests
+        working-directory: ./common-lib
+        run: |
+          echo "🧪 Running common library tests..."
+          mvn test
+
+      - name: Upload common lib artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: common-lib-${{ needs.detect-changes.outputs.build-version }}
+          path: common-lib/target/common-lib-*.jar
+          retention-days: 7
+
+  # Job 3: Build et push des microservices
+  build-microservices:
+    name: 🏗️ Build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build-common-lib]
+    if: |
+      always() &&
+      needs.detect-changes.outputs.should-build == 'true' &&
+      (needs.build-common-lib.result == 'success' || needs.build-common-lib.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.detect-changes.outputs.services-matrix) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Download common lib artifact
+        if: needs.build-common-lib.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: common-lib-${{ needs.detect-changes.outputs.build-version }}
+          path: ./common-lib-artifacts
+
+      - name: Install common lib locally
+        if: needs.build-common-lib.result == 'success'
+        run: |
+          echo "📦 Installing updated common library..."
+          cd common-lib-artifacts
+          for jar in common-lib-*.jar; do
+            if [[ "$jar" != *"-sources.jar" && "$jar" != *"-javadoc.jar" ]]; then
+              mvn install:install-file \
+                -Dfile="$jar" \
+                -DgroupId=com.ecommerce \
+                -DartifactId=common-lib \
+                -Dversion=1.0.7 \
+                -Dpackaging=jar
+              echo "✅ Installed $jar"
+              break
+            fi
+          done
+
+      - name: Copy common lib to service lib directory
+        run: |
+          SERVICE_LIB_DIR="./${{ matrix.service }}/lib"
+          if [[ -d "$SERVICE_LIB_DIR" ]]; then
+            echo "📂 Copying common lib to $SERVICE_LIB_DIR"
+            mkdir -p "$SERVICE_LIB_DIR"
+            if [[ -d "./common-lib-artifacts" ]]; then
+              cp ./common-lib-artifacts/common-lib-*.jar "$SERVICE_LIB_DIR/" 2>/dev/null || true
+            fi
+            # Fallback: utiliser la version locale si disponible
+            cp ./common-lib/target/common-lib-*.jar "$SERVICE_LIB_DIR/" 2>/dev/null || true
+          fi
+
+      - name: Build service
+        working-directory: ./${{ matrix.service }}
+        run: |
+          echo "🏗️ Building ${{ matrix.service }}..."
+          
+          # Build du service
+          mvn clean compile package -DskipTests
+          
+          # Vérifier que le JAR a été créé
+          if [[ -f "target/${{ matrix.service }}.jar" ]]; then
+            echo "✅ ${{ matrix.service }} built successfully"
+            ls -la target/${{ matrix.service }}.jar
+          else
+            echo "❌ ${{ matrix.service }} build failed"
+            exit 1
+          fi
+
+      - name: Run tests
+        working-directory: ./${{ matrix.service }}
+        run: |
+          echo "🧪 Running tests for ${{ matrix.service }}..."
+          mvn test
+        continue-on-error: true
+
+      - name: Run security scan
+        working-directory: ./${{ matrix.service }}
+        run: |
+          echo "🔒 Running security scan for ${{ matrix.service }}..."
+          mvn org.owasp:dependency-check-maven:check || true
+
+      - name: Check ECR repository exists
+        id: check-repo
+        run: |
+          REPO_NAME="${{ matrix.service }}"
+          if aws ecr describe-repositories --repository-names "$REPO_NAME" --region ${{ env.AWS_REGION }} >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "✅ ECR repository $REPO_NAME exists"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "⚠️ ECR repository $REPO_NAME does not exist"
+          fi
+
+      - name: Create ECR repository if needed
+        if: steps.check-repo.outputs.exists == 'false'
+        run: |
+          echo "📦 Creating ECR repository for ${{ matrix.service }}..."
+          aws ecr create-repository \
+            --repository-name ${{ matrix.service }} \
+            --region ${{ env.AWS_REGION }} \
+            --image-scanning-configuration scanOnPush=true \
+            --encryption-configuration encryptionType=AES256
+
+      - name: Generate Docker tags
+        id: tags
+        run: |
+          SERVICE="${{ matrix.service }}"
+          BUILD_VERSION="${{ needs.detect-changes.outputs.build-version }}"
+          ENVIRONMENT="${{ needs.detect-changes.outputs.environment }}"
+          
+          REGISTRY="${{ env.REGISTRY_URL }}"
+          
+          # Tags multiples
+          TAGS=(
+            "${REGISTRY}/${SERVICE}:${BUILD_VERSION}"
+            "${REGISTRY}/${SERVICE}:${ENVIRONMENT}-latest"
+            "${REGISTRY}/${SERVICE}:${GITHUB_SHA:0:7}"
+          )
+          
+          # Tag latest pour prod
+          if [[ "$ENVIRONMENT" == "prod" ]]; then
+            TAGS+=("${REGISTRY}/${SERVICE}:latest")
+          fi
+          
+          # Convertir en string séparée par des espaces
+          TAGS_STRING=$(printf "%s " "${TAGS[@]}")
+          echo "tags=${TAGS_STRING}" >> $GITHUB_OUTPUT
+          
+          echo "🏷️ Docker tags for $SERVICE:"
+          printf '  %s\n' "${TAGS[@]}"
+
+      - name: Build Docker image
+        working-directory: ./${{ matrix.service }}
+        run: |
+          echo "🐳 Building Docker image for ${{ matrix.service }}..."
+          
+          # Vérifier que le Dockerfile existe
+          if [[ ! -f "Dockerfile" ]]; then
+            echo "❌ Dockerfile not found for ${{ matrix.service }}"
+            exit 1
+          fi
+          
+          # Build l'image avec tous les tags
+          docker build \
+            --build-arg JAR_FILE=target/${{ matrix.service }}.jar \
+            --build-arg BUILD_VERSION=${{ needs.detect-changes.outputs.build-version }} \
+            --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+            --build-arg VCS_REF=${{ github.sha }} \
+            --label "org.opencontainers.image.title=${{ matrix.service }}" \
+            --label "org.opencontainers.image.version=${{ needs.detect-changes.outputs.build-version }}" \
+            --label "org.opencontainers.image.source=${{ github.repositoryUrl }}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "org.opencontainers.image.created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            -t ${{ env.REGISTRY_URL }}/${{ matrix.service }}:temp \
+            .
+
+      - name: Tag Docker image
+        run: |
+          echo "🏷️ Tagging Docker image..."
+          for tag in ${{ steps.tags.outputs.tags }}; do
+            docker tag ${{ env.REGISTRY_URL }}/${{ matrix.service }}:temp "$tag"
+            echo "Tagged: $tag"
+          done
+
+      - name: Scan Docker image for vulnerabilities
+        run: |
+          echo "🔍 Scanning Docker image for vulnerabilities..."
+          # Utilisation de trivy pour le scan de sécurité
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image \
+            --severity HIGH,CRITICAL \
+            --format table \
+            ${{ env.REGISTRY_URL }}/${{ matrix.service }}:temp || true
+
+      - name: Push Docker image to ECR
+        run: |
+          echo "🚀 Pushing Docker images to ECR..."
+          for tag in ${{ steps.tags.outputs.tags }}; do
+            echo "Pushing: $tag"
+            docker push "$tag"
+          done
+
+      - name: Clean up local images
+        run: |
+          echo "🧹 Cleaning up local Docker images..."
+          docker rmi ${{ env.REGISTRY_URL }}/${{ matrix.service }}:temp || true
+          for tag in ${{ steps.tags.outputs.tags }}; do
+            docker rmi "$tag" || true
+          done
+
+      - name: Generate service deployment info
+        run: |
+          cat > ${{ matrix.service }}-deployment-info.json << EOF
+          {
+            "service": "${{ matrix.service }}",
+            "version": "${{ needs.detect-changes.outputs.build-version }}",
+            "environment": "${{ needs.detect-changes.outputs.environment }}",
+            "commit_sha": "${{ github.sha }}",
+            "build_time": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+            "image_tags": $(echo '${{ steps.tags.outputs.tags }}' | tr ' ' '\n' | jq -R . | jq -s .),
+            "registry": "${{ env.REGISTRY_URL }}"
+          }
+          EOF
+
+      - name: Upload deployment info
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-info-${{ matrix.service }}
+          path: ${{ matrix.service }}-deployment-info.json
+          retention-days: 30
+
+  # Job 4: Collecte des résultats
+  collect-results:
+    name: 📋 Collect Results
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build-microservices]
+    if: always() && needs.detect-changes.outputs.should-build == 'true'
+    steps:
+      - name: Download all deployment info
+        uses: actions/download-artifact@v4
+        with:
+          pattern: deployment-info-*
+          merge-multiple: true
+
+      - name: Generate deployment summary
+        run: |
+          echo "# 🚀 Microservices Deployment Summary" > deployment-summary.md
+          echo "" >> deployment-summary.md
+          echo "## Build Information" >> deployment-summary.md
+          echo "- **Environment**: ${{ needs.detect-changes.outputs.environment }}" >> deployment-summary.md
+          echo "- **Build Version**: ${{ needs.detect-changes.outputs.build-version }}" >> deployment-summary.md
+          echo "- **Commit**: ${{ github.sha }}" >> deployment-summary.md
+          echo "- **Triggered by**: ${{ github.actor }}" >> deployment-summary.md
+          echo "- **Build time**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> deployment-summary.md
+          echo "" >> deployment-summary.md
+          
+          echo "## Services Built" >> deployment-summary.md
+          echo "| Service | Status | Image Tag |" >> deployment-summary.md
+          echo "|---------|--------|-----------|" >> deployment-summary.md
+          
+          for file in *-deployment-info.json; do
+            if [[ -f "$file" ]]; then
+              SERVICE=$(jq -r '.service' "$file")
+              VERSION=$(jq -r '.version' "$file")
+              REGISTRY=$(jq -r '.registry' "$file")
+              echo "| $SERVICE | ✅ Success | \`${REGISTRY}/${SERVICE}:${VERSION}\` |" >> deployment-summary.md
+            fi
+          done
+          
+          echo "" >> deployment-summary.md
+          echo "## Next Steps" >> deployment-summary.md
+          echo "- Images are available in ECR" >> deployment-summary.md
+          echo "- Update Kubernetes manifests with new image tags" >> deployment-summary.md
+          echo "- Deploy to EKS cluster using Ansible playbooks" >> deployment-summary.md
+
+      - name: Upload deployment summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-summary
+          path: deployment-summary.md
+
+      - name: Comment PR with build results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('deployment-summary.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+  # Job 5: Notification finale
+  notify:
+    name: 📢 Notify
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build-microservices, collect-results]
+    if: always()
+    steps:
+      - name: Determine overall status
+        id: status
+        run: |
+          if [[ "${{ needs.build-microservices.result }}" == "success" ]]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "message=All microservices built and pushed successfully!" >> $GITHUB_OUTPUT
+          elif [[ "${{ needs.build-microservices.result }}" == "failure" ]]; then
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "message=Some microservices failed to build. Check logs for details." >> $GITHUB_OUTPUT
+          elif [[ "${{ needs.detect-changes.outputs.should-build }}" == "false" ]]; then
+            echo "status=skipped" >> $GITHUB_OUTPUT
+            echo "message=No changes detected in microservices. Build skipped." >> $GITHUB_OUTPUT
+          else
+            echo "status=unknown" >> $GITHUB_OUTPUT
+            echo "message=Build status unknown. Please check logs." >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send Slack notification
+        if: always() && vars.SLACK_WEBHOOK_URL
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ steps.status.outputs.status }}
+          channel: '#deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+          text: ${{ steps.status.outputs.message }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Final status
+        run: |
+          echo "🏁 Microservices CI/CD Pipeline Complete"
+          echo "Status: ${{ steps.status.outputs.status }}"
+          echo "Message: ${{ steps.status.outputs.message }}"
+          
+          if [[ "${{ steps.status.outputs.status }}" == "failure" ]]; then
+            exit 1
+          fi

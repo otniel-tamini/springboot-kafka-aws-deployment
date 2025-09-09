@@ -1,2 +1,152 @@
+# =================================
+# FICHIERS TEMPORAIRES ET BUILDS
+# =================================
+
+# Build outputs
+target/
+dist/
+build/
+out/
+*.jar
+!**/lib/*.jar
+*.war
+*.ear
+*.class
+
+# =================================
+# TERRAFORM
+# =================================
+
+# Terraform binary et plugins
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+.terraform.lock.hcl
+
+# Crash log files
+crash.log
+crash.*.log
+
+# =================================
+# ANSIBLE
+# =================================
+
+# Ansible vault files
+*_vault.yml
+*.vault
+.vault_pass
+
+# Ansible retry files
+*.retry
+
+# Ansible logs
+ansible.log
+
+# =================================
+# DEPENDENCIES ET PACKAGES
+# =================================
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Package files
+*.tgz
+*.tar.gz
+
+# =================================
+# ENVIRONNEMENTS ET SECRETS
+# =================================
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# AWS credentials
+.aws/
+
+# =================================
+# IDE ET EDITEURS
+# =================================
+
+# VSCode
+.vscode/
+!.vscode/settings.json
+
+# IntelliJ IDEA
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# Eclipse
+.project
+.classpath
+*.launch
+.settings/
+.metadata
+bin/
+tmp/
+*.tmp
+*.bak
+*.swp
+
+# =================================
+# SYSTEME
+# =================================
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+*.stackdump
+[Dd]esktop.ini
+
+# Linux
+*~
+
+# =================================
+# LOGS
+# =================================
+
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# =================================
+# KUBERNETES
+# =================================
+
+# Kubernetes secrets
+secrets/
+*.key
+*.crt
+*.csr
+
+# =================================
+# DOCKER COMPOSE VOLUMES
+# =================================
+
+mysql_data/
+redis_data/
+kafka_data/
+zookeeper_data/
+
+# =================================
+# FICHIERS SPECIFIQUES AU PROJET
+# =================================
+
 ## You can download zipkin and run command: java -jar zipkin-server-3.4.1-exec.jar at project root path
 zipkin-server-3.4.1-exec.jar

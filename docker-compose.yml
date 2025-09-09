@@ -3,268 +3,340 @@ version: '3.8'
 services:
   # Zookeeper (Required by Kafka)
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.3.1
-    container_name: zookeeper
+    image: confluentinc/cp-zookeeper:${KAFKA_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME}-zookeeper
     environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_CLIENT_PORT: ${ZOOKEEPER_PORT}
       ZOOKEEPER_TICK_TIME: 2000
     ports:
-      - "2181:2181"
+      - "${ZOOKEEPER_PORT}:${ZOOKEEPER_PORT}"
     networks:
-      - shop-network
+      - ${NETWORK_NAME}
+    restart: unless-stopped
 
   # Kafka
   kafka:
-    image: confluentinc/cp-kafka:7.3.1
-    container_name: kafka
+    image: confluentinc/cp-kafka:${KAFKA_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME}-kafka
     depends_on:
       - zookeeper
     ports:
-      - "9092:9092"    # Cổng cho các dịch vụ bên trong Docker
-      - "29092:29092"  # Cổng cho kết nối từ host
+      - "${KAFKA_PORT}:${KAFKA_PORT}"
+      - "${KAFKA_HOST_PORT}:${KAFKA_HOST_PORT}"
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_BROKER_ID: ${KAFKA_BROKER_ID}
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:${ZOOKEEPER_PORT}
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:${KAFKA_PORT},PLAINTEXT_HOST://localhost:${KAFKA_HOST_PORT}
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_REPLICATION_FACTOR}
     networks:
-      - shop-network
-
+      - ${NETWORK_NAME}
+    restart: unless-stopped
 
   # Redis
   redis:
-    image: redis:7.0
-    container_name: redis
+    image: redis:${REDIS_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME}-redis
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT}:${REDIS_PORT}"
     volumes:
       - redis-data:/data
     networks:
-      - shop-network
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+    command: redis-server --appendonly yes
 
   # MySQL for Order Service
   mysql-order-service:
-    image: mysql:8.0
-    container_name: mysql-order-service
-    restart: always
+    image: mysql:${MYSQL_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME}-mysql-order
+    restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: order_db
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${ORDER_DB_NAME}
     ports:
-      - "3307:3306" # Host port 3307 mapped to container port 3306
+      - "${MYSQL_ORDER_PORT}:3306"
     volumes:
       - mysql-order-service-data:/var/lib/mysql
     networks:
-      - shop-network
+      - ${NETWORK_NAME}
+    command: --default-authentication-plugin=mysql_native_password
 
   # MySQL for Identity Service
   mysql-identity-service:
-    image: mysql:8.0
-    container_name: mysql-identity-service
-    restart: always
+    image: mysql:${MYSQL_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME}-mysql-identity
+    restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: user_db
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${IDENTITY_DB_NAME}
     ports:
-      - "3308:3306" # Host port 3308 mapped to container port 3306
+      - "${MYSQL_IDENTITY_PORT}:3306"
     volumes:
       - mysql-identity-service-data:/var/lib/mysql
     networks:
-      - shop-network
+      - ${NETWORK_NAME}
+    command: --default-authentication-plugin=mysql_native_password
 
   mysql-payment-service:
-    image: mysql:8.0
-    container_name: mysql-payment-service
-    restart: always
+    image: mysql:${MYSQL_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME}-mysql-payment
+    restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: payment_db
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${PAYMENT_DB_NAME}
     ports:
-      - "3309:3306" # Host port 3308 mapped to container port 3306
+      - "${MYSQL_PAYMENT_PORT}:3306"
     volumes:
       - mysql-payment-service-data:/var/lib/mysql
     networks:
-      - shop-network
+      - ${NETWORK_NAME}
+    command: --default-authentication-plugin=mysql_native_password
 
   mysql-product-service:
-    image: mysql:8.0
-    container_name: mysql-product-service
-    restart: always
+    image: mysql:${MYSQL_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME}-mysql-product
+    restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: product_db
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${PRODUCT_DB_NAME}
     ports:
-      - "3310:3306" # Host port 3308 mapped to container port 3306
+      - "${MYSQL_PRODUCT_PORT}:3306"
     volumes:
       - mysql-product-service-data:/var/lib/mysql
     networks:
-      - shop-network
-
-  mysql-stock-service:
-    image: mysql:8.0
-    container_name: mysql-stock-service
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: stock_db
-    ports:
-      - "3311:3306" # Host port 3308 mapped to container port 3306
-    volumes:
-      - mysql-stock-service-data:/var/lib/mysql
-    networks:
-      - shop-network
+      - ${NETWORK_NAME}
+    command: --default-authentication-plugin=mysql_native_password
   # Eureka Server
   eureka-server:
-    image: springboot-kafka-microservices/eureka-server:latest
-    container_name: eureka-server
+    build:
+      context: ./service-registry
+      dockerfile: Dockerfile
+    image: ${COMPOSE_PROJECT_NAME}/eureka-server:${IMAGE_TAG}
+    container_name: ${COMPOSE_PROJECT_NAME}-eureka-server
     depends_on:
       - kafka
     ports:
-      - "8761:8761"
+      - "${EUREKA_PORT}:${EUREKA_PORT}"
     environment:
-      SPRING_PROFILES_ACTIVE: docker
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
     networks:
-      - shop-network
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8761/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
   # API Gateway
   api-gateway:
-    image: springboot-kafka-microservices/api-gateway:latest
-    container_name: api-gateway
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    image: ${COMPOSE_PROJECT_NAME}/api-gateway:${IMAGE_TAG}
+    container_name: ${COMPOSE_PROJECT_NAME}-api-gateway
     depends_on:
-      - kafka
-      - eureka-server
+      eureka-server:
+        condition: service_healthy
+      kafka:
+        condition: service_started
     ports:
-      - "9191:9191"
+      - "${API_GATEWAY_PORT}:${API_GATEWAY_PORT}"
     environment:
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
-      SPRING_PROFILES_ACTIVE: docker
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_PORT}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: ${EUREKA_DEFAULT_ZONE}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
     networks:
-      - shop-network
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9191/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
   # Order Service
   order-service:
-    image: springboot-kafka-microservices/order-service:latest
-    container_name: order-service
+    build:
+      context: ./order-service
+      dockerfile: Dockerfile
+    image: ${COMPOSE_PROJECT_NAME}/order-service:${IMAGE_TAG}
+    container_name: ${COMPOSE_PROJECT_NAME}-order-service
     depends_on:
-      - kafka
-      - mysql-order-service
-      - eureka-server
+      eureka-server:
+        condition: service_healthy
+      mysql-order-service:
+        condition: service_started
+      kafka:
+        condition: service_started
     ports:
-      - "8080:8080"
+      - "${ORDER_SERVICE_PORT}:${ORDER_SERVICE_PORT}"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-order-service:3306/order_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
-      SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: root
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
-      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-order-service:3306/${ORDER_DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${DB_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_PORT}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: ${EUREKA_DEFAULT_ZONE}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
     networks:
-      - shop-network
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
+  # Email Service
   email-service:
-    image: springboot-kafka-microservices/email-service:latest
-    container_name: email-service
+    build:
+      context: ./email-service
+      dockerfile: Dockerfile
+    image: ${COMPOSE_PROJECT_NAME}/email-service:${IMAGE_TAG}
+    container_name: ${COMPOSE_PROJECT_NAME}-email-service
     depends_on:
-      - kafka
-      - eureka-server
+      eureka-server:
+        condition: service_healthy
+      kafka:
+        condition: service_started
     ports:
-      - "8086:8086"
+      - "${EMAIL_SERVICE_PORT}:${EMAIL_SERVICE_PORT}"
     environment:
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
-      SPRING_PROFILES_ACTIVE: docker
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_PORT}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: ${EUREKA_DEFAULT_ZONE}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
     networks:
-      - shop-network
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8086/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
+  # Payment Service
   payment-service:
-    image: springboot-kafka-microservices/payment-service:latest
-    container_name: payment-service
+    build:
+      context: ./payment-service
+      dockerfile: Dockerfile
+    image: ${COMPOSE_PROJECT_NAME}/payment-service:${IMAGE_TAG}
+    container_name: ${COMPOSE_PROJECT_NAME}-payment-service
     depends_on:
-      - kafka
-      - mysql-payment-service
-      - eureka-server
+      eureka-server:
+        condition: service_healthy
+      mysql-payment-service:
+        condition: service_started
+      kafka:
+        condition: service_started
     ports:
-      - "8085:8085"
+      - "${PAYMENT_SERVICE_PORT}:${PAYMENT_SERVICE_PORT}"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-payment-service:3306/payment_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
-      SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: root
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
-      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-payment-service:3306/${PAYMENT_DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${DB_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_PORT}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: ${EUREKA_DEFAULT_ZONE}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
     networks:
-      - shop-network
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8085/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
+  # Product Service
   product-service:
-    image: springboot-kafka-microservices/product-service:latest
-    container_name: product-service
+    build:
+      context: ./product-service
+      dockerfile: Dockerfile
+    image: ${COMPOSE_PROJECT_NAME}/product-service:${IMAGE_TAG}
+    container_name: ${COMPOSE_PROJECT_NAME}-product-service
     depends_on:
-      - kafka
-      - mysql-product-service
-      - eureka-server
+      eureka-server:
+        condition: service_healthy
+      mysql-product-service:
+        condition: service_started
+      kafka:
+        condition: service_started
+      redis:
+        condition: service_started
     ports:
-      - "8084:8084"
+      - "${PRODUCT_SERVICE_PORT}:${PRODUCT_SERVICE_PORT}"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-product-service:3306/product_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
-      SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: root
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
-      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-product-service:3306/${PRODUCT_DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${DB_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_PORT}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: ${EUREKA_DEFAULT_ZONE}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
       SPRING_REDIS_HOST: redis
-      SPRING_REDIS_PORT: 6379
-      SPRING_REDIS_TIMEOUT: 60000
+      SPRING_REDIS_PORT: ${REDIS_PORT}
+      SPRING_REDIS_TIMEOUT: ${REDIS_TIMEOUT}
     networks:
-      - shop-network
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8084/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
-  stock-service:
-    image: springboot-kafka-microservices/stock-service:latest
-    container_name: stock-service
-    depends_on:
-      - kafka
-      - mysql-stock-service
-      - eureka-server
-    ports:
-      - "8081:8081"
-    environment:
-      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-stock-service:3306/stock_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
-      SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: root
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
-      SPRING_PROFILES_ACTIVE: docker
-    networks:
-      - shop-network
   # Identity Service
   identity-service:
-    image: springboot-kafka-microservices/identity-service:latest
-    container_name: identity-service
+    build:
+      context: ./identity-service
+      dockerfile: Dockerfile
+    image: ${COMPOSE_PROJECT_NAME}/identity-service:${IMAGE_TAG}
+    container_name: ${COMPOSE_PROJECT_NAME}-identity-service
     depends_on:
-      - kafka
-      - mysql-identity-service
-      - eureka-server
+      eureka-server:
+        condition: service_healthy
+      mysql-identity-service:
+        condition: service_started
+      kafka:
+        condition: service_started
     ports:
-      - "9898:9898"
+      - "${IDENTITY_SERVICE_PORT}:${IDENTITY_SERVICE_PORT}"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-identity-service:3306/user_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
-      SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: root
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
-      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-identity-service:3306/${IDENTITY_DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${DB_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_PORT}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: ${EUREKA_DEFAULT_ZONE}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
     networks:
-      - shop-network
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9898/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
 volumes:
   mysql-order-service-data:
+    driver: local
   mysql-identity-service-data:
+    driver: local
   mysql-product-service-data:
+    driver: local
   mysql-payment-service-data:
-  mysql-stock-service-data:
+    driver: local
   redis-data:
+    driver: local
+
 networks:
   shop-network:
     driver: bridge
+    name: ${NETWORK_NAME}

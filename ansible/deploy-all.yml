@@ -1,0 +1,215 @@
+# =================================
+# PLAYBOOK PRINCIPAL - DÉPLOIEMENT COMPLET
+# =================================
+
+---
+- name: "🚀 Déploiement complet - Infrastructure + Microservices"
+  hosts: k8s_cluster
+  gather_facts: yes
+  become: false
+  
+  vars:
+    deployment_start_time: "{{ ansible_date_time.iso8601 }}"
+    
+  tasks:
+    - name: "🎯 Démarrage du déploiement complet"
+      debug:
+        msg: |
+          🚀 DÉPLOIEMENT COMPLET SPRINGBOOT KAFKA MICROSERVICES
+          =====================================================
+          
+          📅 Heure de début: {{ deployment_start_time }}
+          🌍 Environnement: {{ environment }}
+          🏗️  Namespace Microservices: {{ k8s_namespace }}
+          🏗️  Namespace Infrastructure: infrastructure
+          
+          📦 COMPOSANTS À DÉPLOYER:
+          ├── 🗄️  Infrastructure (Kafka, MySQL, Redis, Monitoring)
+          └── 🚀 Microservices ({{ groups['microservices'] | length }} services)
+
+# =================================
+# ÉTAPE 1: DÉPLOIEMENT INFRASTRUCTURE
+# =================================
+- import_playbook: deploy-infrastructure.yml
+  tags: [infrastructure]
+
+# =================================
+# ÉTAPE 2: ATTENTE ET VÉRIFICATION
+# =================================
+- name: "⏳ Vérification de l'infrastructure avant déploiement des microservices"
+  hosts: k8s_cluster
+  gather_facts: no
+  become: false
+  
+  tasks:
+    - name: "🔍 Vérifier que tous les services d'infrastructure sont prêts"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        namespace: infrastructure
+        label_selectors:
+          - "app.kubernetes.io/instance in (kafka,mysql,redis,monitoring-stack)"
+      register: infrastructure_services
+      
+    - name: "📊 Afficher l'état de l'infrastructure"
+      debug:
+        msg: |
+          🔍 VÉRIFICATION INFRASTRUCTURE
+          ==============================
+          ✅ Services trouvés: {{ infrastructure_services.resources | length }}
+          
+          📋 SERVICES ACTIFS:
+          {% for service in infrastructure_services.resources %}
+          ├── {{ service.metadata.name }}: {{ service.spec.clusterIP }}
+          {% endfor %}
+          
+          ⏭️  Prêt pour le déploiement des microservices...
+
+    - name: "⏳ Pause de 30 secondes pour stabilisation"
+      pause:
+        seconds: 30
+        prompt: "Attente de stabilisation de l'infrastructure..."
+
+# =================================
+# ÉTAPE 3: DÉPLOIEMENT MICROSERVICES
+# =================================
+- import_playbook: deploy-microservices.yml
+  tags: [microservices]
+
+# =================================
+# ÉTAPE 4: CONFIGURATION LOAD BALANCING
+# =================================
+- import_playbook: deploy-ingress.yml
+  tags: [ingress, load-balancing]
+
+# =================================
+# ÉTAPE 5: VÉRIFICATIONS FINALES
+# =================================
+- name: "✅ Vérifications finales et tests de connectivité"
+  hosts: k8s_cluster
+  gather_facts: no
+  become: false
+  
+  vars:
+    deployment_end_time: "{{ ansible_date_time.iso8601 }}"
+    
+  tasks:
+    - name: "🔍 Vérifier la connectivité Kafka"
+      kubernetes.core.k8s_exec:
+        namespace: infrastructure
+        pod: kafka-0
+        command: |
+          kafka-topics.sh --bootstrap-server localhost:9092 --list
+      register: kafka_topics
+      ignore_errors: yes
+      
+    - name: "🔍 Vérifier la connectivité MySQL"
+      kubernetes.core.k8s_exec:
+        namespace: infrastructure
+        pod: mysql-0
+        command: |
+          mysql -u {{ mysql_username }} -p{{ mysql_password }} -e "SHOW DATABASES;"
+      register: mysql_databases
+      ignore_errors: yes
+      
+    - name: "🔍 Vérifier la connectivité Redis"
+      kubernetes.core.k8s_exec:
+        namespace: infrastructure
+        pod: redis-master-0
+        command: |
+          redis-cli -a {{ redis_password }} ping
+      register: redis_ping
+      ignore_errors: yes
+
+    - name: "📊 Récupérer l'état final de tous les déploiements"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ k8s_namespace }}"
+      register: final_deployments
+      
+    - name: "📈 Récupérer l'état final de tous les pods"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ k8s_namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/part-of=springboot-kafka-microservices"
+      register: final_pods
+
+    - name: "🎉 Rapport final de déploiement"
+      debug:
+        msg: |
+          🎉 DÉPLOIEMENT COMPLET TERMINÉ !
+          ================================
+          
+          ⏱️  DURÉE: {{ deployment_start_time }} → {{ deployment_end_time }}
+          
+          🗄️ INFRASTRUCTURE:
+          ├── ☕ Kafka: {{ 'OK' if kafka_topics is succeeded else 'ERREUR' }}
+          ├── 🗄️  MySQL: {{ 'OK' if mysql_databases is succeeded else 'ERREUR' }}
+          ├── 🔴 Redis: {{ 'OK' if redis_ping is succeeded else 'ERREUR' }}
+          └── 📊 Monitoring: Déployé
+          
+          🚀 MICROSERVICES:
+          ├── 📦 Déploiements: {{ final_deployments.resources | length }}
+          ├── 🏃 Pods Total: {{ final_pods.resources | length }}
+          ├── ✅ Pods Actifs: {{ final_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}
+          └── ❌ Pods en Erreur: {{ final_pods.resources | selectattr('status.phase', 'equalto', 'Failed') | list | length }}
+          
+          📊 DÉTAIL DES SERVICES:
+          {% for deployment in final_deployments.resources %}
+          ├── {{ deployment.metadata.name }}
+          │   ├── 📊 Replicas: {{ deployment.status.readyReplicas | default(0) }}/{{ deployment.spec.replicas }}
+          │   ├── 🖼️  Image: {{ deployment.spec.template.spec.containers[0].image }}
+          │   └── 🔗 Status: {{ 'Ready' if deployment.status.readyReplicas == deployment.spec.replicas else 'Not Ready' }}
+          {% endfor %}
+          
+          🌐 POINTS D'ACCÈS:
+          ├── 🚪 API Gateway: kubectl port-forward -n {{ k8s_namespace }} svc/api-gateway 8080:8080
+          ├── 📊 Grafana: kubectl port-forward -n infrastructure svc/monitoring-stack-grafana 3000:3000
+          ├── 📈 Prometheus: kubectl port-forward -n infrastructure svc/monitoring-stack-prometheus 9090:9090
+          └── 🔍 Service Registry: kubectl port-forward -n {{ k8s_namespace }} svc/service-registry 8761:8761
+          
+          📋 COMMANDES UTILES:
+          ├── Logs microservices: kubectl logs -n {{ k8s_namespace }} -l app.kubernetes.io/part-of=springboot-kafka-microservices -f
+          ├── État des pods: kubectl get pods -n {{ k8s_namespace }} -o wide
+          ├── Services: kubectl get svc -n {{ k8s_namespace }}
+          └── Événements: kubectl get events -n {{ k8s_namespace }} --sort-by='.lastTimestamp'
+          
+          🎯 TESTS RECOMMANDÉS:
+          1. Test API Gateway: curl http://localhost:8080/actuator/health
+          2. Test Service Registry: curl http://localhost:8761/actuator/health
+          3. Vérifier les métriques Prometheus
+          4. Consulter les dashboards Grafana
+          
+          {{ '✅ DÉPLOIEMENT RÉUSSI !' if final_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length == final_pods.resources | length else '⚠️  DÉPLOIEMENT PARTIEL - Vérifier les pods en erreur' }}
+
+    - name: "📁 Créer un fichier de rapport de déploiement"
+      copy:
+        content: |
+          # Rapport de Déploiement - {{ deployment_end_time }}
+          
+          ## Infrastructure
+          - Kafka: {{ 'OK' if kafka_topics is succeeded else 'ERREUR' }}
+          - MySQL: {{ 'OK' if mysql_databases is succeeded else 'ERREUR' }}
+          - Redis: {{ 'OK' if redis_ping is succeeded else 'ERREUR' }}
+          
+          ## Microservices
+          {% for deployment in final_deployments.resources %}
+          - {{ deployment.metadata.name }}: {{ deployment.status.readyReplicas | default(0) }}/{{ deployment.spec.replicas }} replicas
+          {% endfor %}
+          
+          ## Commandes d'Accès
+          ```bash
+          # API Gateway
+          kubectl port-forward -n {{ k8s_namespace }} svc/api-gateway 8080:8080
+          
+          # Grafana (admin/{{ grafana_admin_password }})
+          kubectl port-forward -n infrastructure svc/monitoring-stack-grafana 3000:3000
+          
+          # Prometheus
+          kubectl port-forward -n infrastructure svc/monitoring-stack-prometheus 9090:9090
+          ```
+        dest: "/tmp/deployment-report-{{ ansible_date_time.epoch }}.md"
+      delegate_to: localhost

@@ -1,0 +1,83 @@
+# =================================
+# VARIABLES GLOBALES - TOUS LES HOSTS
+# =================================
+
+# Configuration du projet
+project_name: springboot-microservices
+environment: production
+deployment_version: "{{ ansible_date_time.epoch }}"
+
+# Configuration AWS
+aws_region: us-west-2
+
+# Configuration Kubernetes
+k8s_namespace: microservices
+k8s_create_namespace: true
+
+# Configuration des images Docker
+docker_registry: "{{ vault_docker_registry | default('haphong463') }}"
+image_pull_policy: Always
+image_tag: "{{ image_version | default('latest') }}"
+
+# Configuration des services
+service_type: ClusterIP
+
+# Configuration des ressources par défaut
+default_resources:
+  requests:
+    cpu: "200m"
+    memory: "512Mi"
+  limits:
+    cpu: "1000m"
+    memory: "1Gi"
+
+# Configuration des health checks
+default_health_check:
+  initial_delay_seconds: 30
+  period_seconds: 10
+  timeout_seconds: 5
+  failure_threshold: 3
+  success_threshold: 1
+
+# Configuration du rolling update
+rolling_update:
+  max_unavailable: 1
+  max_surge: 1
+
+# Labels communs
+common_labels:
+  app.kubernetes.io/managed-by: ansible
+  app.kubernetes.io/part-of: "{{ project_name }}"
+  app.kubernetes.io/version: "{{ image_tag }}"
+  environment: "{{ environment }}"
+
+# Annotations communes
+common_annotations:
+  deployment.kubernetes.io/revision: "{{ deployment_version }}"
+  ansible.managed: "true"
+
+# Configuration du monitoring
+monitoring:
+  enabled: true
+  prometheus:
+    scrape: true
+    port: 8080
+    path: /actuator/prometheus
+
+# Configuration de sécurité
+security:
+  run_as_non_root: true
+  run_as_user: 1000
+  fs_group: 2000
+  
+# Configuration réseau
+network:
+  dns_policy: ClusterFirst
+  restart_policy: Always
+
+# Configuration des volumes temporaires
+temp_volumes:
+  - name: tmp
+    mount_path: /tmp
+  - name: cache
+    mount_path: /app/cache

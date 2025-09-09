@@ -2,7 +2,7 @@ spring:
   application:
     name: product-service
   profiles:
-    active: dev
+    active: ${SPRING_PROFILES_ACTIVE:dev}
   kafka:
     producer:
       bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
@@ -20,10 +20,10 @@ spring:
     create-order-topic:
       name: create_order_topic
   zipkin:
-    base-url: http://127.0.0.1:9411/
+    base-url: ${ZIPKIN_BASE_URL:http://127.0.0.1:9411/}
   sleuth:
     sampler:
-      probability: 1
+      probability: ${TRACING_SAMPLING_PROBABILITY:1}
   redis:
     host: ${SPRING_REDIS_HOST:localhost}
     port: ${SPRING_REDIS_PORT:6379}
@@ -44,7 +44,7 @@ spring:
       ddl-auto: update
 
 server:
-  port: 8084
+  port: ${PRODUCT_SERVICE_PORT:8084}
 
 eureka:
   client:
@@ -58,4 +58,4 @@ management:
         include: "*"
   tracing:
     sampling:
-      probability: 1
+      probability: ${TRACING_SAMPLING_PROBABILITY:1}

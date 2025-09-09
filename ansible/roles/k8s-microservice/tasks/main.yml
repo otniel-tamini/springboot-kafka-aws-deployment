@@ -1,0 +1,230 @@
+# =================================
+# RÔLE KUBERNETES MICROSERVICE - TÂCHES PRINCIPALES
+# =================================
+
+- name: "🚀 Déploiement {{ service_name }}"
+  debug:
+    msg: "Démarrage du déploiement de {{ service_name }} avec {{ replicas }} replicas"
+
+- name: "📋 Créer le namespace {{ k8s_namespace }}"
+  kubernetes.core.k8s:
+    name: "{{ k8s_namespace }}"
+    api_version: v1
+    kind: Namespace
+    state: present
+    definition:
+      metadata:
+        labels:
+          name: "{{ k8s_namespace }}"
+          managed-by: ansible
+          environment: "{{ environment }}"
+  tags: [namespace]
+
+- name: "🔐 Créer le ConfigMap pour {{ service_name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ service_name }}-config"
+        namespace: "{{ k8s_namespace }}"
+        labels: "{{ common_labels | combine({'app.kubernetes.io/name': service_name, 'app.kubernetes.io/component': 'config'}) }}"
+        annotations: "{{ common_annotations }}"
+      data: "{{ environment | combine({'SERVICE_NAME': service_name}) }}"
+  tags: [configmap]
+
+- name: "🔒 Créer le Secret pour {{ service_name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ service_name }}-secret"
+        namespace: "{{ k8s_namespace }}"
+        labels: "{{ common_labels | combine({'app.kubernetes.io/name': service_name, 'app.kubernetes.io/component': 'secret'}) }}"
+        annotations: "{{ common_annotations }}"
+      type: Opaque
+      data: "{{ secret_environment | default({}) }}"
+  when: secret_environment is defined and secret_environment | length > 0
+  tags: [secret]
+
+- name: "🚀 Créer le Deployment pour {{ service_name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "{{ service_name }}"
+        namespace: "{{ k8s_namespace }}"
+        labels: "{{ common_labels | combine({'app.kubernetes.io/name': service_name, 'app.kubernetes.io/component': 'microservice'}) }}"
+        annotations: "{{ common_annotations }}"
+      spec:
+        replicas: "{{ replicas }}"
+        strategy:
+          type: RollingUpdate
+          rollingUpdate:
+            maxUnavailable: "{{ rolling_update.max_unavailable }}"
+            maxSurge: "{{ rolling_update.max_surge }}"
+        selector:
+          matchLabels:
+            app: "{{ service_name }}"
+            version: "{{ image_tag }}"
+        template:
+          metadata:
+            labels: "{{ common_labels | combine({'app': service_name, 'version': image_tag}) }}"
+            annotations:
+              prometheus.io/scrape: "{{ monitoring.prometheus.scrape | string }}"
+              prometheus.io/port: "{{ monitoring.prometheus.port | string }}"
+              prometheus.io/path: "{{ monitoring.prometheus.path }}"
+              kubectl.kubernetes.io/restartedAt: "{{ ansible_date_time.iso8601 }}"
+          spec:
+            serviceAccountName: "{{ service_account_name | default('default') }}"
+            securityContext:
+              runAsNonRoot: "{{ security.run_as_non_root }}"
+              runAsUser: "{{ security.run_as_user }}"
+              fsGroup: "{{ security.fs_group }}"
+            containers:
+            - name: "{{ service_name }}"
+              image: "{{ image }}:{{ image_tag }}"
+              imagePullPolicy: "{{ image_pull_policy }}"
+              ports:
+              - name: http
+                containerPort: "{{ port }}"
+                protocol: TCP
+              - name: management
+                containerPort: 8080
+                protocol: TCP
+              envFrom:
+              - configMapRef:
+                  name: "{{ service_name }}-config"
+              - secretRef:
+                  name: "{{ service_name }}-secret"
+                  optional: true
+              env:
+              - name: KUBERNETES_NAMESPACE
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.namespace
+              - name: POD_IP
+                valueFrom:
+                  fieldRef:
+                    fieldPath: status.podIP
+              - name: NODE_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: spec.nodeName
+              resources: "{{ resources | default(default_resources) }}"
+              livenessProbe:
+                httpGet:
+                  path: "{{ health_check.path }}"
+                  port: "{{ health_check.port }}"
+                initialDelaySeconds: "{{ default_health_check.initial_delay_seconds }}"
+                periodSeconds: "{{ default_health_check.period_seconds }}"
+                timeoutSeconds: "{{ default_health_check.timeout_seconds }}"
+                failureThreshold: "{{ default_health_check.failure_threshold }}"
+              readinessProbe:
+                httpGet:
+                  path: "{{ health_check.path }}"
+                  port: "{{ health_check.port }}"
+                initialDelaySeconds: 10
+                periodSeconds: 5
+                timeoutSeconds: 3
+                failureThreshold: 3
+                successThreshold: "{{ default_health_check.success_threshold }}"
+              volumeMounts:
+              - name: tmp
+                mountPath: /tmp
+              - name: cache
+                mountPath: /app/cache
+            volumes:
+            - name: tmp
+              emptyDir: {}
+            - name: cache
+              emptyDir: {}
+            dnsPolicy: "{{ network.dns_policy }}"
+            restartPolicy: "{{ network.restart_policy }}"
+  tags: [deployment]
+
+- name: "🌐 Créer le Service pour {{ service_name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ service_name }}"
+        namespace: "{{ k8s_namespace }}"
+        labels: "{{ common_labels | combine({'app.kubernetes.io/name': service_name, 'app.kubernetes.io/component': 'service'}) }}"
+        annotations: "{{ common_annotations | combine(service_annotations | default({})) }}"
+      spec:
+        type: "{{ service_type }}"
+        ports:
+        - name: http
+          port: "{{ port }}"
+          targetPort: http
+          protocol: TCP
+        - name: management
+          port: 8080
+          targetPort: management
+          protocol: TCP
+        selector:
+          app: "{{ service_name }}"
+  tags: [service]
+
+- name: "📊 Créer le ServiceMonitor pour {{ service_name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: "{{ service_name }}"
+        namespace: "{{ k8s_namespace }}"
+        labels: "{{ common_labels | combine({'app.kubernetes.io/name': service_name, 'app.kubernetes.io/component': 'monitoring'}) }}"
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: "{{ service_name }}"
+        endpoints:
+        - port: management
+          path: /actuator/prometheus
+          interval: 30s
+  when: monitoring.enabled
+  tags: [monitoring]
+
+- name: "⏳ Attendre que {{ service_name }} soit prêt"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ service_name }}"
+    namespace: "{{ k8s_namespace }}"
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: 300
+  tags: [verify]
+
+- name: "✅ Vérifier les pods de {{ service_name }}"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ k8s_namespace }}"
+    label_selectors:
+      - "app={{ service_name }}"
+  register: pods_info
+  tags: [verify]
+
+- name: "📋 Afficher le statut de {{ service_name }}"
+  debug:
+    msg: |
+      🚀 Service: {{ service_name }}
+      📊 Replicas: {{ replicas }}
+      🏃 Pods en cours: {{ pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}
+      🔗 Image: {{ image }}:{{ image_tag }}
+      🌐 Port: {{ port }}
+      ✅ Statut: Déployé avec succès
+  tags: [verify, status]

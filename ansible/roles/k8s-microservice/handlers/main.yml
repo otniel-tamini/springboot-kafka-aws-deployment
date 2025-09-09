@@ -1,0 +1,48 @@
+# =================================
+# HANDLERS - RÔLE MICROSERVICE KUBERNETES
+# =================================
+
+- name: "🔄 Redémarrer le déploiement"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "{{ service_name }}"
+        namespace: "{{ k8s_namespace }}"
+        annotations:
+          kubectl.kubernetes.io/restartedAt: "{{ ansible_date_time.iso8601 }}"
+      spec:
+        template:
+          metadata:
+            annotations:
+              kubectl.kubernetes.io/restartedAt: "{{ ansible_date_time.iso8601 }}"
+
+- name: "⏳ Attendre le redémarrage complet"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ service_name }}"
+    namespace: "{{ k8s_namespace }}"
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: 300
+
+- name: "🔍 Vérifier la santé du service"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ k8s_namespace }}"
+    label_selectors:
+      - "app={{ service_name }}"
+  register: service_pods
+
+- name: "📊 Afficher le statut après redémarrage"
+  debug:
+    msg: |
+      🔄 Service redémarré: {{ service_name }}
+      🏃 Pods actifs: {{ service_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}
+      ✅ Redémarrage terminé

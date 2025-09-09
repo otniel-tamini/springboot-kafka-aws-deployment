@@ -1,0 +1,27 @@
+# =================================
+# FREE TIER VALUES
+# =================================
+aws_region = "us-east-1"  # Best free tier coverage
+
+project_name = "springboot-kafka-dev"
+
+# Database configuration
+db_password = "DevPassword123!"
+
+# SSH Key (generate with: ssh-keygen -t rsa -b 2048 -f ~/.ssh/aws-dev-key)
+# Then copy the content of ~/.ssh/aws-dev-key.pub here
+ssh_public_key = "ssh-rsa YOUR_PUBLIC_KEY_HERE your-email@example.com"
+
+# Docker images (update with your Docker Hub images)
+docker_images = {
+  service_registry = "openjdk:11-jre-slim"  # Default for testing
+  api_gateway     = "openjdk:11-jre-slim"
+  order_service   = "openjdk:11-jre-slim"
+  payment_service = "openjdk:11-jre-slim"
+  product_service = "openjdk:11-jre-slim"
+  email_service   = "openjdk:11-jre-slim"
+  identity_service = "openjdk:11-jre-slim"
+}
+
+# Monitoring disabled for cost savings
+enable_monitoring = false

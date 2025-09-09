@@ -1,0 +1,223 @@
+# =================================
+# PLAYBOOK INGRESS - EXPOSITION EXTERNE
+# =================================
+
+---
+- name: "🌐 Configuration Ingress et Load Balancing externe"
+  hosts: k8s_cluster
+  gather_facts: no
+  become: false
+  
+  tasks:
+    - name: "🚪 Créer l'Ingress pour API Gateway (ALB)"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: api-gateway-ingress
+            namespace: "{{ k8s_namespace }}"
+            annotations:
+              # AWS Load Balancer Controller
+              kubernetes.io/ingress.class: alb
+              alb.ingress.kubernetes.io/scheme: internet-facing
+              alb.ingress.kubernetes.io/target-type: ip
+              alb.ingress.kubernetes.io/load-balancer-name: "{{ project_name }}-{{ environment }}-alb"
+              
+              # Configuration ALB
+              alb.ingress.kubernetes.io/load-balancer-attributes: |
+                idle_timeout.timeout_seconds=300,
+                routing.http2.enabled=true,
+                access_logs.s3.enabled=true,
+                access_logs.s3.bucket={{ alb_access_logs_bucket | default('springboot-microservices-alb-logs') }}
+              
+              # Health checks
+              alb.ingress.kubernetes.io/healthcheck-path: /actuator/health
+              alb.ingress.kubernetes.io/healthcheck-interval-seconds: '30'
+              alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
+              alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+              alb.ingress.kubernetes.io/unhealthy-threshold-count: '3'
+              
+              # SSL/TLS
+              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+              alb.ingress.kubernetes.io/ssl-redirect: '443'
+              alb.ingress.kubernetes.io/certificate-arn: "{{ ssl_certificate_arn | default('') }}"
+              
+              # Sécurité
+              alb.ingress.kubernetes.io/security-groups: "{{ alb_security_group | default('') }}"
+              alb.ingress.kubernetes.io/subnets: "{{ alb_subnets | default('') }}"
+              
+            labels:
+              app.kubernetes.io/name: api-gateway-ingress
+              app.kubernetes.io/part-of: "{{ project_name }}"
+              app.kubernetes.io/managed-by: ansible
+          spec:
+            rules:
+            - host: "{{ api_gateway_domain | default('api.springboot-microservices.local') }}"
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: api-gateway
+                      port:
+                        number: 8080
+                        
+                # Routes spécifiques pour les microservices
+                - path: /order
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: order-service
+                      port:
+                        number: 8081
+                        
+                - path: /payment
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: payment-service
+                      port:
+                        number: 8082
+                        
+                - path: /product
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: product-service
+                      port:
+                        number: 8083
+                        
+                - path: /email
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: email-service
+                      port:
+                        number: 8084
+                        
+                - path: /identity
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: identity-service
+                      port:
+                        number: 8085
+      tags: [ingress, alb]
+
+    - name: "📊 Créer l'Ingress pour Monitoring (NLB)"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: monitoring-external
+            namespace: infrastructure
+            annotations:
+              service.beta.kubernetes.io/aws-load-balancer-type: nlb
+              service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+              service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+              service.beta.kubernetes.io/aws-load-balancer-backend-protocol: tcp
+          spec:
+            type: LoadBalancer
+            ports:
+            - name: grafana
+              port: 3000
+              targetPort: 3000
+              protocol: TCP
+            - name: prometheus
+              port: 9090
+              targetPort: 9090
+              protocol: TCP
+            selector:
+              app.kubernetes.io/name: monitoring-stack-grafana
+      when: expose_monitoring | default(false)
+      tags: [monitoring, nlb]
+
+    - name: "🔍 Créer le Service LoadBalancer pour Service Registry"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: service-registry-external
+            namespace: "{{ k8s_namespace }}"
+            annotations:
+              service.beta.kubernetes.io/aws-load-balancer-type: nlb
+              service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+              service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+          spec:
+            type: LoadBalancer
+            ports:
+            - name: http
+              port: 8761
+              targetPort: 8761
+              protocol: TCP
+            selector:
+              app: service-registry
+      when: expose_service_registry | default(false)
+      tags: [service-registry, nlb]
+
+  post_tasks:
+    - name: "⏳ Attendre que l'ALB soit créé"
+      kubernetes.core.k8s_info:
+        api_version: networking.k8s.io/v1
+        kind: Ingress
+        name: api-gateway-ingress
+        namespace: "{{ k8s_namespace }}"
+        wait: true
+        wait_condition:
+          type: Ready
+        wait_timeout: 600
+      tags: [verify]
+
+    - name: "📋 Récupérer l'URL de l'ALB"
+      kubernetes.core.k8s_info:
+        api_version: networking.k8s.io/v1
+        kind: Ingress
+        name: api-gateway-ingress
+        namespace: "{{ k8s_namespace }}"
+      register: ingress_info
+      tags: [verify]
+
+    - name: "🌐 Afficher les URLs d'accès"
+      debug:
+        msg: |
+          🎉 LOAD BALANCING CONFIGURÉ AVEC SUCCÈS !
+          =========================================
+          
+          🚪 API GATEWAY (ALB):
+          ├── URL: http://{{ ingress_info.resources[0].status.loadBalancer.ingress[0].hostname | default('en-cours-de-creation...') }}
+          ├── HTTPS: https://{{ ingress_info.resources[0].status.loadBalancer.ingress[0].hostname | default('en-cours-de-creation...') }}
+          └── Domaine: {{ api_gateway_domain | default('api.springboot-microservices.local') }}
+          
+          📊 MONITORING (si activé):
+          ├── Grafana: http://{{ monitoring_nlb_url | default('port-forward requis') }}:3000
+          └── Prometheus: http://{{ monitoring_nlb_url | default('port-forward requis') }}:9090
+          
+          🔍 SERVICE REGISTRY (si activé):
+          └── Eureka: http://{{ service_registry_nlb_url | default('port-forward requis') }}:8761
+          
+          📋 ROUTES DISPONIBLES:
+          ├── / → API Gateway (routage intelligent)
+          ├── /order → Order Service  
+          ├── /payment → Payment Service
+          ├── /product → Product Service
+          ├── /email → Email Service
+          └── /identity → Identity Service
+          
+          ⚖️ TYPES DE LOAD BALANCING ACTIFS:
+          ├── 🏗️ ALB (Application Load Balancer) - API Gateway
+          ├── 🔗 NLB (Network Load Balancer) - Services TCP
+          ├── ☸️ ClusterIP - Load balancing interne
+          └── 🔄 Kubernetes - Distribution entre pods
+          
+          🎯 TESTS RECOMMANDÉS:
+          1. curl http://{{ ingress_info.resources[0].status.loadBalancer.ingress[0].hostname | default('ALB-URL') }}/actuator/health
+          2. curl http://{{ ingress_info.resources[0].status.loadBalancer.ingress[0].hostname | default('ALB-URL') }}/order/health
+          3. Surveiller les métriques ALB dans CloudWatch
+      tags: [verify]

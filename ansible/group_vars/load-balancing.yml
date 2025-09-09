@@ -1,0 +1,28 @@
+# =================================
+# VARIABLES D'EXPOSITION EXTERNE
+# =================================
+
+# Configuration ALB
+expose_api_gateway: true
+api_gateway_domain: "api.{{ project_name }}.{{ environment }}.local"
+alb_access_logs_bucket: "{{ project_name }}-{{ environment }}-alb-logs"
+
+# Configuration SSL (optionnel)
+ssl_certificate_arn: ""  # ARN du certificat SSL dans ACM
+
+# Configuration monitoring externe
+expose_monitoring: false  # true pour exposer via NLB
+expose_service_registry: false  # true pour exposer Eureka
+
+# Configuration des subnets pour ALB (automatique via tags)
+alb_subnets: ""  # Sera rempli automatiquement
+alb_security_group: ""  # Sera créé automatiquement
+
+# Load balancing avancé
+enable_session_affinity: false
+enable_cross_zone_load_balancing: true
+alb_idle_timeout: 300
+
+# Configuration WAF (optionnel)
+enable_waf: false
+waf_acl_arn: ""

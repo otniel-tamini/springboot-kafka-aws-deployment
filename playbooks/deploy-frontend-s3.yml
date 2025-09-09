@@ -1,0 +1,260 @@
+---
+# =================================
+# PLAYBOOK POUR DÉPLOIEMENT S3 + CLOUDFRONT
+# =================================
+
+- name: Deploy React App to S3 and CloudFront
+  hosts: localhost
+  gather_facts: no
+  vars:
+    # Variables par défaut (à surcharger)
+    project_name: "{{ project_name | default('ecommerce-platform') }}"
+    environment: "{{ environment | default('prod') }}"
+    
+    # Répertoires
+    frontend_build_dir: "{{ playbook_dir }}/../frontend-app/build"
+    terraform_output_file: "{{ playbook_dir }}/../terraform/environments/{{ environment }}/terraform.tfstate"
+    
+    # Configuration S3/CloudFront (récupérée depuis Terraform)
+    s3_bucket: "{{ s3_static_bucket }}"
+    cloudfront_id: "{{ cloudfront_distribution_id }}"
+    aws_region: "{{ aws_region | default('eu-west-1') }}"
+
+  tasks:
+    # =================================
+    # PRÉPARATION ET VÉRIFICATIONS
+    # =================================
+    
+    - name: Vérifier que le répertoire de build existe
+      stat:
+        path: "{{ frontend_build_dir }}"
+      register: build_dir_stat
+      
+    - name: Échouer si le build n'existe pas
+      fail:
+        msg: "Le répertoire de build {{ frontend_build_dir }} n'existe pas. Exécutez 'npm run build' d'abord."
+      when: not build_dir_stat.stat.exists
+
+    - name: Vérifier la présence d'AWS CLI
+      command: aws --version
+      register: aws_cli_check
+      failed_when: aws_cli_check.rc != 0
+      changed_when: false
+
+    - name: Vérifier les credentials AWS
+      command: aws sts get-caller-identity
+      register: aws_identity
+      failed_when: aws_identity.rc != 0
+      changed_when: false
+
+    - name: Afficher l'identité AWS
+      debug:
+        msg: "Déploiement avec l'utilisateur AWS: {{ (aws_identity.stdout | from_json).Arn }}"
+
+    # =================================
+    # RÉCUPÉRATION DES OUTPUTS TERRAFORM
+    # =================================
+    
+    - name: Récupérer les outputs Terraform S3
+      shell: |
+        cd {{ playbook_dir }}/../terraform/environments/{{ environment }}
+        terraform output -json s3_static_ansible_vars
+      register: terraform_s3_outputs
+      changed_when: false
+
+    - name: Parser les outputs S3
+      set_fact:
+        s3_config: "{{ terraform_s3_outputs.stdout | from_json }}"
+
+    - name: Afficher la configuration S3
+      debug:
+        var: s3_config
+
+    # =================================
+    # BUILD ET OPTIMISATION
+    # =================================
+    
+    - name: Construire l'application React (si nécessaire)
+      shell: |
+        cd {{ playbook_dir }}/../frontend-app
+        npm ci
+        npm run build
+      when: frontend_force_build | default(false) | bool
+      register: npm_build_result
+
+    - name: Compresser les fichiers CSS et JS
+      shell: |
+        find {{ frontend_build_dir }} -name "*.css" -exec gzip -k {} \;
+        find {{ frontend_build_dir }} -name "*.js" -exec gzip -k {} \;
+        find {{ frontend_build_dir }} -name "*.html" -exec gzip -k {} \;
+      register: compression_result
+      
+    - name: Afficher les résultats de compression
+      debug:
+        msg: "Fichiers compressés dans {{ frontend_build_dir }}"
+
+    # =================================
+    # SYNCHRONISATION S3
+    # =================================
+    
+    - name: Sauvegarder la version actuelle (optionnel)
+      shell: |
+        aws s3 sync s3://{{ s3_config.s3_static_bucket }} s3://{{ s3_config.s3_static_bucket }}-backup-$(date +%Y%m%d-%H%M%S) \
+          --region {{ aws_region }}
+      when: create_backup | default(false) | bool
+      register: backup_result
+
+    - name: Synchroniser les fichiers vers S3
+      shell: |
+        aws s3 sync {{ frontend_build_dir }} s3://{{ s3_config.s3_static_bucket }} \
+          --region {{ aws_region }} \
+          --delete \
+          --cache-control "public,max-age=31536000,immutable" \
+          --exclude "*.html" \
+          --exclude "service-worker.js" \
+          --exclude "manifest.json"
+      register: s3_sync_assets
+
+    - name: Synchroniser les fichiers HTML avec cache court
+      shell: |
+        aws s3 sync {{ frontend_build_dir }} s3://{{ s3_config.s3_static_bucket }} \
+          --region {{ aws_region }} \
+          --cache-control "public,max-age=0,must-revalidate" \
+          --include "*.html" \
+          --include "service-worker.js" \
+          --include "manifest.json"
+      register: s3_sync_html
+
+    - name: Définir les métadonnées pour la compression
+      shell: |
+        aws s3 cp {{ frontend_build_dir }} s3://{{ s3_config.s3_static_bucket }} \
+          --recursive \
+          --metadata-directive REPLACE \
+          --content-encoding gzip \
+          --include "*.gz" \
+          --region {{ aws_region }}
+      register: s3_compression_metadata
+
+    # =================================
+    # INVALIDATION CLOUDFRONT
+    # =================================
+    
+    - name: Créer une invalidation CloudFront
+      shell: |
+        aws cloudfront create-invalidation \
+          --distribution-id {{ s3_config.cloudfront_id }} \
+          --paths "/*"
+      register: cloudfront_invalidation
+
+    - name: Récupérer l'ID d'invalidation
+      set_fact:
+        invalidation_id: "{{ (cloudfront_invalidation.stdout | from_json).Invalidation.Id }}"
+
+    - name: Attendre la completion de l'invalidation (optionnel)
+      shell: |
+        aws cloudfront wait invalidation-completed \
+          --distribution-id {{ s3_config.cloudfront_id }} \
+          --id {{ invalidation_id }}
+      when: wait_for_invalidation | default(false) | bool
+      async: 1800  # 30 minutes max
+      poll: 30
+
+    # =================================
+    # VÉRIFICATIONS POST-DÉPLOIEMENT
+    # =================================
+    
+    - name: Tester l'accessibilité du site
+      uri:
+        url: "https://{{ s3_config.cloudfront_domain }}"
+        method: GET
+        status_code: 200
+        timeout: 30
+      register: site_check
+      retries: 3
+      delay: 10
+
+    - name: Tester l'API via CloudFront
+      uri:
+        url: "https://{{ s3_config.cloudfront_domain }}/api/health"
+        method: GET
+        status_code: 200
+        timeout: 30
+      register: api_check
+      retries: 3
+      delay: 10
+      ignore_errors: yes
+
+    # =================================
+    # RAPPORT DE DÉPLOIEMENT
+    # =================================
+    
+    - name: Générer le rapport de déploiement
+      template:
+        src: deployment-report.j2
+        dest: "{{ playbook_dir }}/deployment-report-{{ ansible_date_time.epoch }}.html"
+      vars:
+        deployment_time: "{{ ansible_date_time.iso8601 }}"
+        s3_bucket_name: "{{ s3_config.s3_static_bucket }}"
+        cloudfront_domain: "{{ s3_config.cloudfront_domain }}"
+        invalidation_id: "{{ invalidation_id }}"
+        site_accessible: "{{ site_check.status == 200 }}"
+        api_accessible: "{{ api_check.status == 200 if api_check.status is defined else false }}"
+
+    # =================================
+    # NOTIFICATIONS
+    # =================================
+    
+    - name: Notifier le succès du déploiement
+      debug:
+        msg: |
+          ✅ Déploiement réussi !
+          
+          🌐 Site web: https://{{ s3_config.cloudfront_domain }}
+          📦 Bucket S3: {{ s3_config.s3_static_bucket }}
+          🚀 CloudFront: {{ s3_config.cloudfront_id }}
+          🔄 Invalidation: {{ invalidation_id }}
+          
+          ⏱️  L'invalidation CloudFront peut prendre jusqu'à 15 minutes.
+
+    - name: Envoyer notification Slack (optionnel)
+      uri:
+        url: "{{ slack_webhook_url }}"
+        method: POST
+        body_format: json
+        body:
+          text: |
+            🚀 Déploiement frontend réussi !
+            
+            Environment: {{ environment }}
+            Site: https://{{ s3_config.cloudfront_domain }}
+            Déployé par: {{ ansible_user_id }}
+      when: slack_webhook_url is defined
+      ignore_errors: yes
+
+# =================================
+# PLAYBOOK DE ROLLBACK
+# =================================
+
+- name: Rollback Frontend Deployment
+  hosts: localhost
+  gather_facts: no
+  vars:
+    backup_timestamp: "{{ backup_timestamp }}"  # À fournir
+    
+  tasks:
+    - name: Vérifier que le timestamp de backup est fourni
+      fail:
+        msg: "Veuillez fournir backup_timestamp"
+      when: backup_timestamp is not defined
+
+    - name: Restaurer depuis le backup
+      shell: |
+        aws s3 sync s3://{{ s3_config.s3_static_bucket }}-backup-{{ backup_timestamp }} s3://{{ s3_config.s3_static_bucket }} \
+          --region {{ aws_region }} \
+          --delete
+
+    - name: Invalider CloudFront après rollback
+      shell: |
+        aws cloudfront create-invalidation \
+          --distribution-id {{ s3_config.cloudfront_id }} \
+          --paths "/*"

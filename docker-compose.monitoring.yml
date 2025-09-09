@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  # Kafka UI pour monitorer Kafka
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: ${COMPOSE_PROJECT_NAME}-kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:${KAFKA_PORT}
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:${ZOOKEEPER_PORT}
+    networks:
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+
+  # Redis Commander pour monitorer Redis
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: ${COMPOSE_PROJECT_NAME}-redis-commander
+    depends_on:
+      - redis
+    ports:
+      - "8081:8081"
+    environment:
+      REDIS_HOSTS: local:redis:${REDIS_PORT}
+    networks:
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+
+  # Adminer pour administrer MySQL
+  adminer:
+    image: adminer:latest
+    container_name: ${COMPOSE_PROJECT_NAME}-adminer
+    ports:
+      - "8082:8080"
+    networks:
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+
+networks:
+  shop-network:
+    external: true
+    name: ${NETWORK_NAME}
